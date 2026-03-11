@@ -42,6 +42,12 @@ export interface IOEventSlot {
   responseBodyOriginalSize: number | null;
   error: { type: string; message: string } | null;
   aborted: boolean;
+  dbMeta?: {
+    query?: string;
+    params?: string;
+    rowCount?: number | null;
+    collection?: string;
+  };
   estimatedBytes: number;
 }
 
@@ -122,6 +128,12 @@ export interface IOEventSerialized {
   responseBodyOriginalSize: number | null;
   error: { type: string; message: string } | null;
   aborted: boolean;
+  dbMeta?: {
+    query?: string;
+    params?: string;
+    rowCount?: number | null;
+    collection?: string;
+  };
 }
 
 export interface StateReadSerialized {
