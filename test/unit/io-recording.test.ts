@@ -175,6 +175,7 @@ describe('Module 08 recorders', () => {
     res.statusCode = 201;
     res.setHeader('content-type', 'application/json');
     res.setHeader('set-cookie', 'hidden');
+    recorder.install();
 
     server.on('request', () => {
       observedRequestId = als.getRequestId();

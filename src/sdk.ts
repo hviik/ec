@@ -112,6 +112,7 @@ export class SDKInstance {
     }
 
     this.processMetadata.collectStartupMetadata();
+    this.httpServerRecorder.install();
     this.channelSubscriber.subscribeAll();
     this.patchManager.installAll();
     this.registerProcessHandlers();

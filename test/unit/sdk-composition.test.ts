@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Server } from 'node:http';
 
 import {
   captureError as captureErrorFacade,
@@ -40,6 +41,7 @@ describe('SDK composition', () => {
     const onSpy = vi.spyOn(process, 'on');
     const sdk = createSDK();
     const collectSpy = vi.spyOn(sdk.processMetadata, 'collectStartupMetadata');
+    const installSpy = vi.spyOn(sdk['httpServerRecorder'], 'install');
     const lagSpy = vi.spyOn(sdk.processMetadata, 'startEventLoopLagMeasurement');
     const subscribeSpy = vi.spyOn(sdk.channelSubscriber, 'subscribeAll');
     const patchSpy = vi.spyOn(sdk.patchManager, 'installAll');
@@ -49,6 +51,7 @@ describe('SDK composition', () => {
 
       expect(sdk.isActive()).toBe(true);
       expect(collectSpy).toHaveBeenCalledTimes(1);
+      expect(installSpy).toHaveBeenCalledTimes(1);
       expect(subscribeSpy).toHaveBeenCalledTimes(1);
       expect(patchSpy).toHaveBeenCalledTimes(1);
       expect(lagSpy).toHaveBeenCalledTimes(1);
@@ -62,6 +65,25 @@ describe('SDK composition', () => {
       );
     } finally {
       await sdk.shutdown();
+    }
+  });
+
+  it('does not patch Server.prototype.emit until activate and restores it on shutdown', async () => {
+    const originalEmit = Server.prototype.emit;
+    const sdk = createSDK();
+
+    try {
+      expect(Server.prototype.emit).toBe(originalEmit);
+
+      sdk.activate();
+      expect(Server.prototype.emit).not.toBe(originalEmit);
+
+      await sdk.shutdown();
+      expect(Server.prototype.emit).toBe(originalEmit);
+    } finally {
+      if (sdk.isActive()) {
+        await sdk.shutdown();
+      }
     }
   });
 

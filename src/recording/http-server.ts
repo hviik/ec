@@ -94,8 +94,11 @@ export class HttpServerRecorder {
     this.bodyCapture = deps.bodyCapture;
     this.headerFilter = deps.headerFilter;
     this.config = deps.config;
-    this.tryBindStore();
     this.originalServerEmit = Server.prototype.emit;
+  }
+
+  public install(): void {
+    this.tryBindStore();
     this.installEmitPatch();
   }
 
