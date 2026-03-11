@@ -4,45 +4,11 @@
  * @dependencies types.ts, als-manager.ts, request-tracker.ts
  */
 
-interface SDKInstanceLike {
-  isActive(): boolean;
-  als: {
-    createRequestContext(input: {
-      method: string;
-      url: string;
-      headers: Record<string, string>;
-    }): { requestId: string };
-    runWithContext<T>(ctx: { requestId: string }, fn: () => T): T;
-  };
-  requestTracker: {
-    add(ctx: { requestId: string }): void;
-    remove(requestId: string): void;
-  };
-}
-
-function getModuleInstance(): SDKInstanceLike | null {
-  try {
-    const moduleRef = require('../index') as {
-      getModuleInstance?: () => SDKInstanceLike | null;
-    };
-
-    return moduleRef.getModuleInstance?.() ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function extractHeaders(headers: Record<string, unknown>): Record<string, string> {
-  const copied: Record<string, string> = {};
-
-  for (const [key, value] of Object.entries(headers)) {
-    if (typeof value === 'string') {
-      copied[key] = value;
-    }
-  }
-
-  return copied;
-}
+import {
+  extractHeaders,
+  getModuleInstance,
+  type SDKInstanceLike
+} from './common';
 
 export function koaMiddleware(sdk?: SDKInstanceLike) {
   return async (
