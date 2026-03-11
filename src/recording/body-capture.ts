@@ -301,7 +301,6 @@ export class BodyCapture {
 
     slot[bodyKey] = body;
     slot.estimatedBytes = estimateBytes(slot);
-    slot.phase = 'done';
 
     onBytesChanged(oldBytes, slot.estimatedBytes);
     state.chunks = [];

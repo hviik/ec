@@ -99,7 +99,7 @@ describe('BodyCapture', () => {
 
     expect(Buffer.concat(seenByApp).toString()).toBe('hello');
     expect(slot.requestBody?.toString()).toBe('hello');
-    expect(slot.phase).toBe('done');
+    expect(slot.phase).toBe('active');
     expect(slot.estimatedBytes).toBe(261);
     expect(onBytesChanged).toHaveBeenCalledWith(256, 261);
   });
