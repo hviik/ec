@@ -234,6 +234,7 @@ export class PackageBuilder {
     const ioPayloadsTruncated = pkg.ioTimeline.reduce((count, event) => {
       return count + Number(event.requestBodyTruncated) + Number(event.responseBodyTruncated);
     }, 0);
+    const stateTrackingEnabled = parts.stateTrackingEnabled;
 
     return {
       requestCaptured: pkg.request !== undefined,
@@ -246,7 +247,7 @@ export class PackageBuilder {
         Array.isArray(pkg.localVariables) && pkg.localVariables.length > 0,
       localVariablesTruncated:
         (pkg.localVariables?.length ?? 0) >= this.config.maxLocalsFrames,
-      stateTrackingEnabled: parts.stateTrackingEnabled,
+      stateTrackingEnabled,
       stateReadsCaptured: pkg.stateReads.length > 0,
       concurrentRequestsCaptured: true,
       piiScrubbed: true,

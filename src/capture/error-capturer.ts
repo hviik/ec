@@ -151,7 +151,7 @@ export class ErrorCapturer {
         ioEventsDropped: this.buffer.getOverflowCount(),
         captureFailures,
         alsContextAvailable: context !== undefined,
-        stateTrackingEnabled: stateReads.length > 0,
+        stateTrackingEnabled: context !== undefined,
         usedAmbientEvents
       });
 
