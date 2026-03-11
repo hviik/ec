@@ -173,6 +173,20 @@ export class InspectorManager {
 
     if (this.session !== null) {
       try {
+        this.session.post(
+          'Debugger.setPauseOnExceptions',
+          { state: 'none' },
+          () => undefined
+        );
+      } catch {
+        // best-effort
+      }
+      try {
+        this.session.post('Debugger.disable', () => undefined);
+      } catch {
+        // best-effort
+      }
+      try {
         this.session.disconnect();
       } catch {
         // Ignore disconnect failures during teardown.

@@ -450,7 +450,30 @@ describe('InspectorManager', () => {
       manager.cache.set('Error: boom', { frames: [], timestamp: Date.now() });
       manager.shutdown();
 
+      expect(inspector.session.post).toHaveBeenCalledWith(
+        'Debugger.setPauseOnExceptions',
+        { state: 'none' },
+        expect.any(Function)
+      );
+      expect(inspector.session.post).toHaveBeenCalledWith(
+        'Debugger.disable',
+        expect.any(Function)
+      );
+      const pauseOffIndex = inspector.session.post.mock.calls.findIndex(
+        (call) => call[0] === 'Debugger.setPauseOnExceptions' && call[1]?.state === 'none'
+      );
+      const disableIndex = inspector.session.post.mock.calls.findIndex(
+        (call) => call[0] === 'Debugger.disable'
+      );
+      const disconnectIndex = inspector.session.disconnect.mock.invocationCallOrder[0] ?? Infinity;
+      const pauseOffOrder = inspector.session.post.mock.invocationCallOrder[pauseOffIndex] ?? -1;
+      const disableOrder = inspector.session.post.mock.invocationCallOrder[disableIndex] ?? -1;
+
       expect(inspector.session.disconnect).toHaveBeenCalledTimes(1);
+      expect(pauseOffOrder).toBeGreaterThan(0);
+      expect(disableOrder).toBeGreaterThan(0);
+      expect(pauseOffOrder).toBeLessThan(disconnectIndex);
+      expect(disableOrder).toBeLessThan(disconnectIndex);
       expect(timers.clearIntervalSpy).toHaveBeenCalledTimes(2);
       expect(manager.cache.size).toBe(0);
       expect(manager.isAvailable()).toBe(false);
