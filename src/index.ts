@@ -53,6 +53,14 @@ export async function shutdown(): Promise<void> {
 }
 
 export { createSDK };
+export { expressMiddleware } from './middleware/express';
+export { fastifyPlugin } from './middleware/fastify';
+export { koaMiddleware } from './middleware/koa';
+export { hapiPlugin } from './middleware/hapi';
+export { wrapHandler } from './middleware/raw-http';
+
+export type { SDKConfig, ErrorPackage, Completeness, ResolvedConfig } from './types';
+export type { SDKInstance } from './sdk';
 
 export function getModuleInstance(): SDKInstance | null {
   return instance;
