@@ -8,7 +8,7 @@ import dns = require('node:dns');
 import net = require('node:net');
 import type { Socket } from 'node:net';
 
-import type { IOEventSlot, RequestContext, ResolvedConfig } from '../types';
+import type { IOEventSlot, RequestContext } from '../types';
 import { extractFd, toDurationMs } from './utils';
 
 interface IOEventBufferLike {
@@ -60,18 +60,14 @@ export class NetDnsRecorder {
 
   private readonly als: ALSManagerLike;
 
-  private readonly config: ResolvedConfig;
-
   private readonly restores: RestoreFn[] = [];
 
   public constructor(deps: {
     buffer: IOEventBufferLike;
     als: ALSManagerLike;
-    config: ResolvedConfig;
   }) {
     this.buffer = deps.buffer;
     this.als = deps.als;
-    this.config = deps.config;
     this.patchNet();
     this.patchDns();
   }
@@ -176,8 +172,6 @@ export class NetDnsRecorder {
     while (this.restores.length > 0) {
       this.restores.pop()?.();
     }
-
-    void this.config;
   }
 
   private patchNet(): void {

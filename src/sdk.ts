@@ -284,27 +284,23 @@ export function createSDK(userConfig: Partial<SDKConfig> = {}): SDKInstance {
     buffer,
     als,
     bodyCapture,
-    headerFilter,
-    config
+    headerFilter
   });
   const undiciRecorder = new UndiciRecorder({
     buffer,
     als,
-    headerFilter,
-    config
+    headerFilter
   });
   const netDnsRecorder = new NetDnsRecorder({
     buffer,
-    als,
-    config
+    als
   });
   const patchManager = new PatchManager({ buffer, als, config });
   const channelSubscriber = new ChannelSubscriber({
     httpServer: httpServerRecorder,
     httpClient: httpClientRecorder,
     undiciRecorder,
-    netDns: netDnsRecorder,
-    config
+    netDns: netDnsRecorder
   });
   const packageBuilder = new PackageBuilder({ scrubber, config });
   const transport = new TransportDispatcher({ config, encryption });

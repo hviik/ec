@@ -268,8 +268,7 @@ describe('Module 08 recorders', () => {
       buffer,
       als,
       bodyCapture: new BodyCapture(config),
-      headerFilter: new HeaderFilter(config),
-      config
+      headerFilter: new HeaderFilter(config)
     });
     const request = new MockClientRequest();
     const response = new MockIncomingResponse();
@@ -311,8 +310,7 @@ describe('Module 08 recorders', () => {
       buffer,
       als: new ALSManager(),
       bodyCapture: new BodyCapture(config),
-      headerFilter: new HeaderFilter(config),
-      config
+      headerFilter: new HeaderFilter(config)
     });
     const request = new MockClientRequest();
 
@@ -339,8 +337,7 @@ describe('Module 08 recorders', () => {
     const recorder = new UndiciRecorder({
       buffer,
       als,
-      headerFilter: new HeaderFilter(config),
-      config
+      headerFilter: new HeaderFilter(config)
     });
     const firstRequest = {
       method: 'POST',
@@ -419,8 +416,7 @@ describe('Module 08 recorders', () => {
 
     const recorder = new NetDnsRecorder({
       buffer,
-      als: new ALSManager(),
-      config
+      als: new ALSManager()
     });
 
     try {
@@ -458,8 +454,7 @@ describe('Module 08 recorders', () => {
     const buffer = new IOEventBuffer({ capacity: 10, maxBytes: 100000 });
     const recorder = new NetDnsRecorder({
       buffer,
-      als: new ALSManager(),
-      config
+      als: new ALSManager()
     });
 
     try {

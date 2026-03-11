@@ -6,7 +6,7 @@
 
 import type { IncomingMessage, ClientRequest } from 'node:http';
 
-import type { IOEventSlot, RequestContext, ResolvedConfig } from '../types';
+import type { IOEventSlot, RequestContext } from '../types';
 import { copyHeaders, extractFd, toDurationMs } from './utils';
 
 interface IOEventBufferLike {
@@ -90,20 +90,16 @@ export class HttpClientRecorder {
 
   private readonly headerFilter: HeaderFilterLike;
 
-  private readonly config: ResolvedConfig;
-
   public constructor(deps: {
     buffer: IOEventBufferLike;
     als: ALSManagerLike;
     bodyCapture: BodyCaptureLike;
     headerFilter: HeaderFilterLike;
-    config: ResolvedConfig;
   }) {
     this.buffer = deps.buffer;
     this.als = deps.als;
     this.bodyCapture = deps.bodyCapture;
     this.headerFilter = deps.headerFilter;
-    this.config = deps.config;
   }
 
   public handleRequestStart(message: { request: ClientRequest }): void {
@@ -193,6 +189,6 @@ export class HttpClientRecorder {
   }
 
   public shutdown(): void {
-    void this.config;
+    return;
   }
 }

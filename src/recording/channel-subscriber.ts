@@ -4,8 +4,6 @@
  * @dependencies config.ts, http-server.ts, http-client.ts, undici.ts, net-dns.ts
  */
 
-import type { ResolvedConfig } from '../types';
-
 interface DiagnosticsChannelModule {
   subscribe: (channelName: string, handler: (message: unknown, name: string) => void) => void;
   unsubscribe: (channelName: string, handler: (message: unknown, name: string) => void) => void;
@@ -48,8 +46,6 @@ export class ChannelSubscriber {
 
   private readonly netDns: NetDnsRecorderLike;
 
-  private readonly config: ResolvedConfig;
-
   private subscriptions: Subscription[] = [];
 
   public constructor(deps: {
@@ -57,13 +53,11 @@ export class ChannelSubscriber {
     httpClient: HttpClientRecorderLike;
     undiciRecorder: UndiciRecorderLike;
     netDns: NetDnsRecorderLike;
-    config: ResolvedConfig;
   }) {
     this.httpServer = deps.httpServer;
     this.httpClient = deps.httpClient;
     this.undiciRecorder = deps.undiciRecorder;
     this.netDns = deps.netDns;
-    this.config = deps.config;
   }
 
   public subscribeAll(): void {
@@ -148,8 +142,6 @@ export class ChannelSubscriber {
         );
       }
     }
-
-    void this.config;
   }
 
   public unsubscribeAll(): void {

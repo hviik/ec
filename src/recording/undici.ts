@@ -4,7 +4,7 @@
  * @dependencies types.ts, io-event-buffer.ts, als-manager.ts, request-tracker.ts, body-capture.ts, header-filter.ts
  */
 
-import type { IOEventSlot, RequestContext, ResolvedConfig } from '../types';
+import type { IOEventSlot, RequestContext } from '../types';
 import { normalizeHeaderValue, toDurationMs } from './utils';
 
 interface IOEventBufferLike {
@@ -103,20 +103,16 @@ export class UndiciRecorder {
 
   private readonly headerFilter: HeaderFilterLike;
 
-  private readonly config: ResolvedConfig;
-
   private readonly slots = new WeakMap<object, IOEventSlot>();
 
   public constructor(deps: {
     buffer: IOEventBufferLike;
     als: ALSManagerLike;
     headerFilter: HeaderFilterLike;
-    config: ResolvedConfig;
   }) {
     this.buffer = deps.buffer;
     this.als = deps.als;
     this.headerFilter = deps.headerFilter;
-    this.config = deps.config;
   }
 
   public handleRequestCreate(message: { request: unknown }): void {
@@ -230,7 +226,7 @@ export class UndiciRecorder {
   }
 
   public shutdown(): void {
-    void this.config;
+    return;
   }
 
   private getSlot(request: unknown): IOEventSlot | undefined {
