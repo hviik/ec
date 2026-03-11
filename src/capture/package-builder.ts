@@ -121,6 +121,11 @@ export class PackageBuilder {
   }
 
   public build(parts: ErrorPackageParts): ErrorPackage {
+    const serializedTimeline = parts.ioTimeline.map((event) => serializeIOEvent(event));
+    const serializedStateReads = parts.stateReads.map((read) =>
+      serializeStateRead(read)
+    );
+
     const packageObject: ErrorPackage = {
       schemaVersion: '1.0.0',
       capturedAt: new Date().toISOString(),
@@ -145,15 +150,15 @@ export class PackageBuilder {
               bodyTruncated: parts.requestContext.bodyTruncated || undefined,
               receivedAt: approximateIsoFromHrtime(parts.requestContext.startTime)
             },
-      ioTimeline: parts.ioTimeline.map((event) => serializeIOEvent(event)),
-      stateReads: parts.stateReads.map((read) => serializeStateRead(read)),
+      ioTimeline: serializedTimeline,
+      stateReads: serializedStateReads,
       concurrentRequests: parts.concurrentRequests.map((summary) => ({ ...summary })),
       processMetadata: { ...parts.processMetadata },
       codeVersion: { ...parts.codeVersion },
       environment: { ...parts.environment },
       completeness: this.computeCompleteness(parts, false, {
-        ioTimeline: parts.ioTimeline.map((event) => serializeIOEvent(event)),
-        stateReads: parts.stateReads.map((read) => serializeStateRead(read))
+        ioTimeline: serializedTimeline,
+        stateReads: serializedStateReads
       })
     };
 
