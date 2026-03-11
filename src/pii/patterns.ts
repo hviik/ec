@@ -1,0 +1,38 @@
+/**
+ * @module 04-pii-scrubbing
+ * @spec spec/04-pii-scrubbing.md
+ * @dependencies types.ts, config.ts, clone-and-limit.ts
+ */
+
+export const EMAIL_REGEX =
+  /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+
+export const CREDIT_CARD_REGEX = /\b\d{13,19}\b/g;
+
+export const SSN_REGEX = /\b\d{3}-\d{2}-\d{4}\b/g;
+
+export const JWT_REGEX =
+  /\beyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\b/g;
+
+export const BEARER_REGEX = /\bBearer\s+[a-zA-Z0-9_\-.~+/]+=*\b/gi;
+
+export const SENSITIVE_KEY_REGEX =
+  /password|passwd|secret|token|key|auth|credential|ssn|social.*security|credit.*card|card.*number|cvv|cvc|expir/i;
+
+export function isValidLuhn(digits: string): boolean {
+  if (!/^\d{13,19}$/.test(digits)) {
+    return false;
+  }
+
+  let sum = 0;
+  let shouldDouble = false;
+
+  for (let index = digits.length - 1; index >= 0; index -= 1) {
+    let digit = Number(digits[index]);
+    if (shouldDouble && (digit *= 2) > 9) digit -= 9;
+    sum += digit;
+    shouldDouble = !shouldDouble;
+  }
+
+  return sum % 10 === 0;
+}
