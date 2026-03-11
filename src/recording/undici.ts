@@ -5,6 +5,7 @@
  */
 
 import type { IOEventSlot, RequestContext, ResolvedConfig } from '../types';
+import { normalizeHeaderValue, toDurationMs } from './utils';
 
 interface IOEventBufferLike {
   push(event: Omit<IOEventSlot, 'seq' | 'estimatedBytes'>): {
@@ -19,28 +20,6 @@ interface ALSManagerLike {
 
 interface HeaderFilterLike {
   filterHeaders(headers: Record<string, string>): Record<string, string>;
-}
-
-function toDurationMs(startTime: bigint, endTime: bigint): number {
-  return Number(endTime - startTime) / 1_000_000;
-}
-
-function normalizeHeaderValue(value: unknown): string | null {
-  if (typeof value === 'string') {
-    return value;
-  }
-
-  if (typeof value === 'number') {
-    return String(value);
-  }
-
-  if (Array.isArray(value)) {
-    return value
-      .filter((entry): entry is string => typeof entry === 'string')
-      .join(', ');
-  }
-
-  return null;
 }
 
 function normalizeHeaders(input: unknown): Record<string, string> {

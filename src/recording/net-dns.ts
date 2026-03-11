@@ -9,6 +9,7 @@ import net = require('node:net');
 import type { Socket } from 'node:net';
 
 import type { IOEventSlot, RequestContext, ResolvedConfig } from '../types';
+import { extractFd, toDurationMs } from './utils';
 
 interface IOEventBufferLike {
   push(event: Omit<IOEventSlot, 'seq' | 'estimatedBytes'>): {
@@ -22,16 +23,6 @@ interface ALSManagerLike {
 }
 
 type RestoreFn = () => void;
-
-function toDurationMs(startTime: bigint, endTime: bigint): number {
-  return Number(endTime - startTime) / 1_000_000;
-}
-
-function extractFd(socket: unknown): number | null {
-  const maybeFd = (socket as { _handle?: { fd?: unknown } } | undefined)?._handle?.fd;
-
-  return typeof maybeFd === 'number' ? maybeFd : null;
-}
 
 function buildNetTarget(args: unknown[]): string {
   const first = args[0];

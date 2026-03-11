@@ -11,6 +11,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 
 import type { IOEventSlot, RequestContext, ResolvedConfig } from '../types';
+import { copyHeaders, extractFd, toDurationMs } from './utils';
 
 interface IOEventBufferLike {
   push(event: Omit<IOEventSlot, 'seq' | 'estimatedBytes'>): {
@@ -60,53 +61,6 @@ interface BindStoreChannel {
     store: AsyncLocalStorage<RequestContext>,
     transform: (message: { request?: IncomingMessage }) => RequestContext
   ) => void;
-}
-
-function toDurationMs(startTime: bigint, endTime: bigint): number {
-  return Number(endTime - startTime) / 1_000_000;
-}
-
-function normalizeHeaderValue(value: unknown): string | null {
-  if (typeof value === 'string') {
-    return value;
-  }
-
-  if (typeof value === 'number') {
-    return String(value);
-  }
-
-  if (Array.isArray(value)) {
-    return value
-      .filter((entry): entry is string => typeof entry === 'string')
-      .join(', ');
-  }
-
-  return null;
-}
-
-function copyHeaders(headers: Record<string, unknown> | undefined): Record<string, string> {
-  const copied: Record<string, string> = {};
-
-  if (headers === undefined) {
-    return copied;
-  }
-
-  for (const [key, value] of Object.entries(headers)) {
-    const normalized = normalizeHeaderValue(value);
-
-    if (normalized !== null) {
-      copied[key] = normalized;
-    }
-  }
-
-  return copied;
-}
-
-function extractFd(socket: Socket | undefined): number | null {
-  const maybeFd = (socket as unknown as { _handle?: { fd?: unknown } } | undefined)
-    ?._handle?.fd;
-
-  return typeof maybeFd === 'number' ? maybeFd : null;
 }
 
 export class HttpServerRecorder {
