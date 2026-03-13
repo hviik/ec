@@ -196,4 +196,23 @@ describe('StateTracker', () => {
       'cache'
     ]);
   });
+
+  it('caps recorded reads per request context', () => {
+    const als = new ALSManager();
+    const tracker = new StateTracker({ als });
+    const tracked = tracker.track(
+      'cache',
+      Object.fromEntries(Array.from({ length: 60 }, (_, index) => [`key${index}`, index]))
+    );
+    const context = createContext(als, 'req-cap');
+
+    als.runWithContext(context, () => {
+      for (let index = 0; index < 60; index += 1) {
+        void tracked[`key${index}`];
+      }
+    });
+
+    expect(context.stateReads).toHaveLength(50);
+    expect(context.stateReads[49]?.key).toBe('key49');
+  });
 });

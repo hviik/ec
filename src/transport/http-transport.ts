@@ -7,6 +7,9 @@
 import http = require('node:http');
 import https = require('node:https');
 
+import { markRequestAsInternal } from '../recording/internal';
+import { runAsInternal } from '../recording/net-dns';
+
 interface HttpTransportConfig {
   url: string;
   apiKey?: string;
@@ -84,46 +87,50 @@ export class HttpTransport {
         return;
       }
 
-      const request = requestModule.request(
-        {
-          protocol: this.url.protocol,
-          hostname: this.url.hostname,
-          port: this.url.port === '' ? undefined : Number(this.url.port),
-          path: `${this.url.pathname}${this.url.search}`,
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'content-length': String(body.length),
-            ...(this.apiKey === undefined
-              ? {}
-              : { Authorization: `Bearer ${this.apiKey}` })
-          }
-        },
-        (response) => {
-          const statusCode = response.statusCode ?? 500;
+      runAsInternal(() => {
+        const request = markRequestAsInternal(
+          requestModule.request(
+            {
+              protocol: this.url.protocol,
+              hostname: this.url.hostname,
+              port: this.url.port === '' ? undefined : Number(this.url.port),
+              path: `${this.url.pathname}${this.url.search}`,
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                'content-length': String(body.length),
+                ...(this.apiKey === undefined
+                  ? {}
+                  : { Authorization: `Bearer ${this.apiKey}` })
+              }
+            },
+            (response) => {
+              const statusCode = response.statusCode ?? 500;
 
-          response.on('data', () => undefined);
-          response.on('end', () => {
-            if (statusCode >= 200 && statusCode < 300) {
-              resolve();
-              return;
+              response.on('data', () => undefined);
+              response.on('end', () => {
+                if (statusCode >= 200 && statusCode < 300) {
+                  resolve();
+                  return;
+                }
+
+                reject(new Error(`HTTP ${statusCode}`));
+              });
             }
+          )
+        );
 
-            reject(new Error(`HTTP ${statusCode}`));
-          });
-        }
-      );
+        request.on('error', (error) => {
+          reject(error);
+        });
 
-      request.on('error', (error) => {
-        reject(error);
+        request.setTimeout(this.timeoutMs, () => {
+          request.destroy(new Error('HTTP transport timeout'));
+        });
+
+        request.write(body);
+        request.end();
       });
-
-      request.setTimeout(this.timeoutMs, () => {
-        request.destroy(new Error('HTTP transport timeout'));
-      });
-
-      request.write(body);
-      request.end();
     });
   }
 }

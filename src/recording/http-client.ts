@@ -7,6 +7,11 @@
 import type { IncomingMessage, ClientRequest } from 'node:http';
 
 import type { IOEventSlot, RequestContext } from '../types';
+import {
+  ECD_INTERNAL,
+  SDK_INTERNAL_REQUESTS,
+  isSdkInternalRequest
+} from './internal';
 import { copyHeaders, extractFd, toDurationMs } from './utils';
 
 interface IOEventBufferLike {
@@ -81,6 +86,8 @@ function buildTarget(request: ClientRequest): {
   };
 }
 
+export { ECD_INTERNAL, SDK_INTERNAL_REQUESTS };
+
 export class HttpClientRecorder {
   private readonly buffer: IOEventBufferLike;
 
@@ -105,6 +112,10 @@ export class HttpClientRecorder {
   public handleRequestStart(message: { request: ClientRequest }): void {
     try {
       if (message.request === undefined) {
+        return;
+      }
+
+      if (isSdkInternalRequest(message.request)) {
         return;
       }
 

@@ -9,6 +9,7 @@ import net = require('node:net');
 import type { Socket } from 'node:net';
 
 import type { IOEventSlot, RequestContext } from '../types';
+import { isInternalCallActive, runAsInternal } from './internal';
 import { extractFd, toDurationMs } from './utils';
 
 interface IOEventBufferLike {
@@ -23,6 +24,8 @@ interface ALSManagerLike {
 }
 
 type RestoreFn = () => void;
+
+export { runAsInternal };
 
 function buildNetTarget(args: unknown[]): string {
   const first = args[0];
@@ -81,6 +84,10 @@ export class NetDnsRecorder {
     error?: Error;
   }): void {
     try {
+      if (isInternalCallActive()) {
+        return;
+      }
+
       const context = message.context;
       const startTime = message.startTime ?? process.hrtime.bigint();
       const endTime = message.endTime ?? process.hrtime.bigint();
@@ -190,6 +197,10 @@ export class NetDnsRecorder {
     const recorder = this;
 
     moduleRef[methodName] = ((...args: unknown[]) => {
+      if (isInternalCallActive()) {
+        return (original as (...input: unknown[]) => unknown).apply(net, args);
+      }
+
       const startTime = process.hrtime.bigint();
       const target = buildNetTarget(args);
       const context = recorder.als.getContext();
@@ -254,6 +265,10 @@ export class NetDnsRecorder {
     const recorder = this;
 
     moduleRef[methodName] = ((...args: unknown[]) => {
+      if (isInternalCallActive()) {
+        return (original as (...input: unknown[]) => unknown).apply(dns, args);
+      }
+
       const startTime = process.hrtime.bigint();
       const context = recorder.als.getContext();
       const hostname = typeof args[0] === 'string' ? args[0] : 'unknown';

@@ -6,6 +6,7 @@
 
 import type { IOEventSlot } from '../types';
 
+// Accounts for serialized JSON field names and structure, not the in-memory null slot size.
 const METADATA_OVERHEAD = 256;
 
 type PushableIOEvent = Omit<IOEventSlot, 'seq' | 'estimatedBytes'>;

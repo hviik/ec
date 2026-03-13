@@ -126,7 +126,7 @@ describe('ProcessMetadata', () => {
     const timers = createTimeoutStubs();
     const now = vi.spyOn(Date, 'now');
 
-    now.mockReturnValueOnce(1000).mockReturnValueOnce(1004);
+    now.mockReturnValueOnce(1000).mockReturnValueOnce(2004);
 
     const metadata = new ProcessMetadata(resolveConfig({}));
 
@@ -138,6 +138,7 @@ describe('ProcessMetadata', () => {
     expect(runtime.memoryUsage.rss).toBeGreaterThan(0);
     expect(runtime.uptime).toBeGreaterThanOrEqual(0);
     expect(runtime.eventLoopLagMs).toBe(4);
+    expect(timers.setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 1000);
     expect(timers.timers[0]?.unref).toHaveBeenCalledTimes(1);
   });
 

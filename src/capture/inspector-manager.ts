@@ -4,12 +4,16 @@
  * @dependencies types.ts, config.ts
  */
 
+import path = require('node:path');
+
 import type { CapturedFrame, ResolvedConfig } from '../types';
 
 const SENSITIVE_VAR_RE =
-  /^(password|secret|token|apiKey|privateKey|credential|auth|sessionId)$/i;
+  /password|passwd|secret|token|key|auth|credential|ssn|social.*security|credit.*card|card.*number|cvv|cvc|expir/i;
 const STRING_LIMIT = 2048;
 const CACHE_TTL_MS = 30000;
+const DEBUGGER_IDLE_TIMEOUT_MS = 30000;
+const SDK_ROOT = path.resolve(__dirname, '..').replace(/\\/g, '/');
 
 interface InspectorModule {
   url(): string | undefined;
@@ -93,6 +97,10 @@ export class InspectorManager {
 
   private cacheSweepTimer: NodeJS.Timeout | null = null;
 
+  private debuggerIdleTimer: NodeJS.Timeout | null = null;
+
+  private debuggerPauseActive = false;
+
   public constructor(config: ResolvedConfig) {
     this.maxCollectionsPerSecond = config.maxLocalsCollectionsPerSecond;
     this.maxCachedLocals = config.maxCachedLocals;
@@ -119,11 +127,6 @@ export class InspectorManager {
       this.session = new inspectorModule.Session();
       this.session.connect();
       this.session.post('Debugger.enable', () => undefined);
-      this.session.post(
-        'Debugger.setPauseOnExceptions',
-        { state: 'all' },
-        () => undefined
-      );
       this.session.on('Debugger.paused', (event) => {
         this._onPaused(event.params);
       });
@@ -143,6 +146,8 @@ export class InspectorManager {
   }
 
   public getLocals(error: Error): CapturedFrame[] | null {
+    this.ensureDebuggerActive();
+
     const key = `${error.constructor.name}: ${error.message}`;
     const entry = this.cache.get(key);
 
@@ -158,6 +163,23 @@ export class InspectorManager {
     return this.available;
   }
 
+  public ensureDebuggerActive(): void {
+    if (!this.available || this.session === null) {
+      return;
+    }
+
+    if (!this.debuggerPauseActive) {
+      this.session.post(
+        'Debugger.setPauseOnExceptions',
+        { state: 'all' },
+        () => undefined
+      );
+      this.debuggerPauseActive = true;
+    }
+
+    this.deactivateAfterIdle();
+  }
+
   public shutdown(): void {
     if (this.rateLimitTimer !== null) {
       clearInterval(this.rateLimitTimer);
@@ -169,15 +191,22 @@ export class InspectorManager {
       this.cacheSweepTimer = null;
     }
 
+    if (this.debuggerIdleTimer !== null) {
+      clearTimeout(this.debuggerIdleTimer);
+      this.debuggerIdleTimer = null;
+    }
+
     this.cache.clear();
 
     if (this.session !== null) {
       try {
-        this.session.post(
-          'Debugger.setPauseOnExceptions',
-          { state: 'none' },
-          () => undefined
-        );
+        if (this.debuggerPauseActive) {
+          this.session.post(
+            'Debugger.setPauseOnExceptions',
+            { state: 'none' },
+            () => undefined
+          );
+        }
       } catch {
         // best-effort
       }
@@ -194,11 +223,14 @@ export class InspectorManager {
     }
 
     this.session = null;
+    this.debuggerPauseActive = false;
     this.available = false;
   }
 
   private _onPaused(params: PausedEventParams): void {
     try {
+      this.deactivateAfterIdle();
+
       try {
         if (
           params.reason !== 'exception' &&
@@ -401,9 +433,35 @@ export class InspectorManager {
       normalizedUrl.startsWith('node:') ||
       normalizedUrl.includes('/node_modules/') ||
       normalizedUrl.includes('node:internal') ||
-      normalizedUrl.includes('/src/capture/inspector-manager') ||
-      normalizedUrl.includes('/dist/capture/inspector-manager')
+      normalizedUrl.startsWith(`${SDK_ROOT}/`)
     );
+  }
+
+  private deactivateAfterIdle(): void {
+    if (this.debuggerIdleTimer !== null) {
+      clearTimeout(this.debuggerIdleTimer);
+    }
+
+    this.debuggerIdleTimer = setTimeout(() => {
+      this.debuggerIdleTimer = null;
+
+      if (!this.debuggerPauseActive || this.session === null) {
+        return;
+      }
+
+      try {
+        this.session.post(
+          'Debugger.setPauseOnExceptions',
+          { state: 'none' },
+          () => undefined
+        );
+      } catch {
+        // best-effort
+      } finally {
+        this.debuggerPauseActive = false;
+      }
+    }, DEBUGGER_IDLE_TIMEOUT_MS);
+    this.debuggerIdleTimer.unref();
   }
 
   private _sweepCache(): void {

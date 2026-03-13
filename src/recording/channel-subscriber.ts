@@ -107,12 +107,6 @@ export class ChannelSubscriber {
         handler: (message) => {
           this.netDns.handleNetConnect(message);
         }
-      },
-      {
-        channelName: 'net.server.socket',
-        handler: (message) => {
-          this.netDns.handleNetConnect(message);
-        }
       }
     ];
 

@@ -33,6 +33,25 @@ function createTimerStubs() {
   return { timers, setIntervalSpy, clearIntervalSpy };
 }
 
+function createTimeoutStubs() {
+  const timers: Array<{ id: NodeJS.Timeout; fn: () => void; unref: ReturnType<typeof vi.fn> }> =
+    [];
+  const setTimeoutSpy = vi
+    .spyOn(globalThis, 'setTimeout')
+    .mockImplementation(((fn: TimerHandler) => {
+      const unref = vi.fn();
+      const timer = { unref } as unknown as NodeJS.Timeout;
+
+      timers.push({ id: timer, fn: fn as () => void, unref });
+      return timer;
+    }) as typeof setTimeout);
+  const clearTimeoutSpy = vi
+    .spyOn(globalThis, 'clearTimeout')
+    .mockImplementation(() => undefined as never);
+
+  return { timers, setTimeoutSpy, clearTimeoutSpy };
+}
+
 function createInspectorMock(options?: {
   url?: string;
   connectThrows?: boolean;
@@ -117,8 +136,9 @@ describe('InspectorManager', () => {
     expect(manager.getLocals(new Error('boom'))).toBeNull();
   });
 
-  it('enables the debugger and pause-on-exceptions when inspector is available', () => {
+  it('enables the debugger and defers pause-on-exceptions until first use', () => {
     const timers = createTimerStubs();
+    const timeoutTimers = createTimeoutStubs();
     const inspector = createInspectorMock();
 
     withInspectorMock(inspector.inspectorModule, () => {
@@ -130,14 +150,44 @@ describe('InspectorManager', () => {
         'Debugger.enable',
         expect.any(Function)
       );
+      expect(
+        inspector.session.post.mock.calls.some(
+          (call) => call[0] === 'Debugger.setPauseOnExceptions' && call[1]?.state === 'all'
+        )
+      ).toBe(false);
+      expect(timers.timers).toHaveLength(2);
+      expect(timers.timers[0]?.unref).toHaveBeenCalledTimes(1);
+      expect(timers.timers[1]?.unref).toHaveBeenCalledTimes(1);
+
+      manager.ensureDebuggerActive();
+
       expect(inspector.session.post).toHaveBeenCalledWith(
         'Debugger.setPauseOnExceptions',
         { state: 'all' },
         expect.any(Function)
       );
-      expect(timers.timers).toHaveLength(2);
-      expect(timers.timers[0]?.unref).toHaveBeenCalledTimes(1);
-      expect(timers.timers[1]?.unref).toHaveBeenCalledTimes(1);
+      expect(timeoutTimers.timers).toHaveLength(1);
+      expect(timeoutTimers.timers[0]?.unref).toHaveBeenCalledTimes(1);
+      manager.shutdown();
+    });
+  });
+
+  it('disables pause-on-exceptions again after the idle timeout', () => {
+    createTimerStubs();
+    const timeoutTimers = createTimeoutStubs();
+    const inspector = createInspectorMock();
+
+    withInspectorMock(inspector.inspectorModule, () => {
+      const manager = new InspectorManager(resolveConfig({}));
+
+      manager.ensureDebuggerActive();
+      timeoutTimers.timers[0]?.fn();
+
+      expect(inspector.session.post).toHaveBeenCalledWith(
+        'Debugger.setPauseOnExceptions',
+        { state: 'none' },
+        expect.any(Function)
+      );
       manager.shutdown();
     });
   });
@@ -377,6 +427,21 @@ describe('InspectorManager', () => {
     });
   });
 
+  it('treats SDK frames as non-app frames', () => {
+    const inspector = createInspectorMock();
+
+    withInspectorMock(inspector.inspectorModule, () => {
+      const manager = new InspectorManager(resolveConfig({})) as unknown as {
+        _isAppFrame(url: string | undefined): boolean;
+        shutdown(): void;
+      };
+
+      expect(manager._isAppFrame('/home/hv/ecd/src/transport/transport.ts')).toBe(false);
+      expect(manager._isAppFrame('/app/src/handler.js')).toBe(true);
+      manager.shutdown();
+    });
+  });
+
   it('drops expired cache entries on sweep', () => {
     const timers = createTimerStubs();
     const inspector = createInspectorMock();
@@ -438,6 +503,7 @@ describe('InspectorManager', () => {
 
   it('shutdown disconnects the session, clears timers, empties cache, and marks unavailable', () => {
     const timers = createTimerStubs();
+    const timeoutTimers = createTimeoutStubs();
     const inspector = createInspectorMock();
 
     withInspectorMock(inspector.inspectorModule, () => {
@@ -448,6 +514,7 @@ describe('InspectorManager', () => {
       };
 
       manager.cache.set('Error: boom', { frames: [], timestamp: Date.now() });
+      manager.ensureDebuggerActive();
       manager.shutdown();
 
       expect(inspector.session.post).toHaveBeenCalledWith(
@@ -475,6 +542,7 @@ describe('InspectorManager', () => {
       expect(pauseOffOrder).toBeLessThan(disconnectIndex);
       expect(disableOrder).toBeLessThan(disconnectIndex);
       expect(timers.clearIntervalSpy).toHaveBeenCalledTimes(2);
+      expect(timeoutTimers.clearTimeoutSpy).toHaveBeenCalledTimes(1);
       expect(manager.cache.size).toBe(0);
       expect(manager.isAvailable()).toBe(false);
     });

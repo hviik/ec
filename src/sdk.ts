@@ -208,6 +208,12 @@ export class SDKInstance {
   }
 
   private registerProcessHandlers(): void {
+    for (const listener of this.processListeners) {
+      process.removeListener(listener.event, listener.handler);
+    }
+
+    this.processListeners.length = 0;
+
     const uncaughtExceptionHandler = (error: Error) => {
       this.errorCapturer.capture(error, { isUncaught: true });
     };

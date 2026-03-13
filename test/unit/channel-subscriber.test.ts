@@ -2,7 +2,6 @@ import Module = require('node:module');
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { resolveConfig } from '../../src/config';
 import { ChannelSubscriber } from '../../src/recording/channel-subscriber';
 
 const originalRequire = Module.prototype.require;
@@ -43,8 +42,7 @@ function createSubscriber() {
     },
     netDns: {
       handleNetConnect: vi.fn()
-    },
-    config: resolveConfig({})
+    }
   });
 }
 
@@ -73,8 +71,7 @@ describe('ChannelSubscriber', () => {
       'undici:request:headers',
       'undici:request:trailers',
       'undici:request:error',
-      'net.client.socket',
-      'net.server.socket'
+      'net.client.socket'
     ]);
   });
 
@@ -91,7 +88,7 @@ describe('ChannelSubscriber', () => {
       subscriber.unsubscribeAll();
     });
 
-    expect(diagnosticsChannel.unsubscribe).toHaveBeenCalledTimes(8);
+    expect(diagnosticsChannel.unsubscribe).toHaveBeenCalledTimes(7);
     expect(diagnosticsChannel.unsubscribe.mock.calls.map((call) => call[0])).toEqual([
       'http.server.request.start',
       'http.client.request.start',
@@ -99,8 +96,7 @@ describe('ChannelSubscriber', () => {
       'undici:request:headers',
       'undici:request:trailers',
       'undici:request:error',
-      'net.client.socket',
-      'net.server.socket'
+      'net.client.socket'
     ]);
   });
 
@@ -127,8 +123,7 @@ describe('ChannelSubscriber', () => {
       },
       netDns: {
         handleNetConnect: vi.fn()
-      },
-      config: resolveConfig({})
+      }
     });
 
     withDiagnosticsChannelMock(diagnosticsChannel, () => {
@@ -147,7 +142,7 @@ describe('ChannelSubscriber', () => {
     const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
     const diagnosticsChannel = {
       subscribe: vi.fn((channelName: string) => {
-        if (channelName === 'net.server.socket') {
+        if (channelName === 'net.client.socket') {
           throw new Error('missing channel');
         }
       }),
@@ -163,7 +158,7 @@ describe('ChannelSubscriber', () => {
     ).not.toThrow();
 
     expect(debug).toHaveBeenCalledTimes(1);
-    expect(diagnosticsChannel.subscribe).toHaveBeenCalledTimes(8);
+    expect(diagnosticsChannel.subscribe).toHaveBeenCalledTimes(7);
   });
 
   it('is idempotent when subscribeAll is called twice', () => {
@@ -179,7 +174,7 @@ describe('ChannelSubscriber', () => {
       subscriber.subscribeAll();
     });
 
-    expect(diagnosticsChannel.subscribe).toHaveBeenCalledTimes(16);
-    expect(diagnosticsChannel.unsubscribe).toHaveBeenCalledTimes(8);
+    expect(diagnosticsChannel.subscribe).toHaveBeenCalledTimes(14);
+    expect(diagnosticsChannel.unsubscribe).toHaveBeenCalledTimes(7);
   });
 });

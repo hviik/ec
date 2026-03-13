@@ -4,6 +4,8 @@
  * @dependencies types.ts, config.ts, encryption.ts
  */
 
+import fs = require('node:fs');
+
 export class StdoutTransport {
   public async send(payload: string | Buffer): Promise<void> {
     await new Promise<void>((resolve, reject) => {
@@ -30,6 +32,10 @@ export class StdoutTransport {
   }
 
   public sendSync(payload: string): void {
-    process.stderr.write(`${payload}\n`);
+    try {
+      fs.writeSync(1, `${payload}\n`);
+    } catch {
+      // Ignore write failures during process exit.
+    }
   }
 }

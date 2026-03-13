@@ -33,6 +33,8 @@ interface RuntimeMetadata {
 }
 
 export class ProcessMetadata {
+  private static readonly LAG_SAMPLE_INTERVAL_MS = 1000;
+
   private readonly config: ResolvedConfig;
 
   private startupMetadata: StartupMetadata | null = null;
@@ -108,10 +110,13 @@ export class ProcessMetadata {
       const scheduledAt = Date.now();
 
       this.lagTimer = setTimeout(() => {
-        this.eventLoopLagMs = Math.max(0, Date.now() - scheduledAt);
+        this.eventLoopLagMs = Math.max(
+          0,
+          Date.now() - scheduledAt - ProcessMetadata.LAG_SAMPLE_INTERVAL_MS
+        );
         this.lagTimer = null;
         schedule();
-      }, 0);
+      }, ProcessMetadata.LAG_SAMPLE_INTERVAL_MS);
       this.lagTimer.unref();
     };
 

@@ -7,7 +7,6 @@
 import type { ResolvedConfig } from '../types';
 import type { Encryption } from '../security/encryption';
 import { FileTransport } from './file-transport';
-import { HttpTransport } from './http-transport';
 import { StdoutTransport } from './stdout-transport';
 
 interface WorkerLike {
@@ -43,16 +42,40 @@ function getWorkerThreads(): WorkerThreadsModule {
   return require('node:worker_threads') as WorkerThreadsModule;
 }
 
+function createWorkerConfig(config: ResolvedConfig): {
+  transport:
+    | { type: 'stdout' }
+    | {
+        type: 'file';
+        path: string;
+        maxSizeBytes?: number;
+      };
+} {
+  if (config.transport.type === 'stdout') {
+    return {
+      transport: { type: 'stdout' }
+    };
+  }
+
+  if (config.transport.type === 'file') {
+    return {
+      transport: {
+        type: 'file',
+        path: config.transport.path,
+        ...(config.transport.maxSizeBytes === undefined
+          ? {}
+          : { maxSizeBytes: config.transport.maxSizeBytes })
+      }
+    };
+  }
+
+  throw new Error('HTTP transport is not supported in local-only mode');
+}
+
 function createWorkerSource(): string {
   return `
 const { parentPort, workerData } = require('node:worker_threads');
-const http = require('node:http');
-const https = require('node:https');
 const fs = require('node:fs');
-
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function createTransport(config) {
   if (config.transport.type === 'stdout') {
@@ -99,71 +122,7 @@ function createTransport(config) {
     };
   }
 
-  const transportUrl = new URL(config.transport.url);
-  const timeoutMs = config.transport.timeoutMs ?? 10000;
-  const retries = config.transport.retries ?? 3;
-  const allowInsecureTransport = config.allowInsecureTransport === true;
-
-  if (transportUrl.protocol !== 'https:' && !allowInsecureTransport) {
-    throw new Error('HTTP transport requires HTTPS unless allowInsecureTransport is true');
-  }
-
-  async function sendOnce(payload) {
-    await new Promise((resolve, reject) => {
-      const body = Buffer.isBuffer(payload) ? payload : Buffer.from(payload);
-      const requestModule = transportUrl.protocol === 'https:' ? https : http;
-      const request = requestModule.request(
-        {
-          protocol: transportUrl.protocol,
-          hostname: transportUrl.hostname,
-          port: transportUrl.port === '' ? undefined : Number(transportUrl.port),
-          path: transportUrl.pathname + transportUrl.search,
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'content-length': String(body.length),
-            ...(config.transport.apiKey ? { Authorization: 'Bearer ' + config.transport.apiKey } : {})
-          }
-        },
-        (response) => {
-          const statusCode = response.statusCode ?? 500;
-          response.on('data', () => undefined);
-          response.on('end', () => {
-            if (statusCode >= 200 && statusCode < 300) {
-              resolve();
-              return;
-            }
-
-            reject(new Error('HTTP ' + statusCode));
-          });
-        }
-      );
-
-      request.on('error', reject);
-      request.setTimeout(timeoutMs, () => request.destroy(new Error('HTTP transport timeout')));
-      request.write(body);
-      request.end();
-    });
-  }
-
-  return {
-    async send(payload) {
-      for (let attempt = 0; attempt < retries; attempt += 1) {
-        try {
-          await sendOnce(payload);
-          return;
-        } catch (error) {
-          if (attempt === retries - 1) {
-            return;
-          }
-
-          await delay(1000 * 2 ** attempt);
-        }
-      }
-    },
-    async flush() {},
-    async shutdown() {}
-  };
+  throw new Error('HTTP transport is not supported in local-only mode');
 }
 
 const transport = createTransport(workerData.config);
@@ -185,7 +144,8 @@ parentPort.on('message', async (message) => {
     if (message.type === 'shutdown') {
       await transport.shutdown();
       parentPort.postMessage({ id: message.id });
-      process.exit(0);
+      parentPort.close();
+      return;
     }
   } catch (error) {
     parentPort.postMessage({ id: message.id, error: error instanceof Error ? error.message : String(error) });
@@ -203,10 +163,7 @@ function createTransport(config: ResolvedConfig): SyncCapableTransport {
     return new FileTransport(config.transport);
   }
 
-  return new HttpTransport({
-    ...config.transport,
-    allowInsecureTransport: config.allowInsecureTransport
-  });
+  throw new Error('HTTP transport is not supported in local-only mode');
 }
 
 export interface Transport {
@@ -304,7 +261,7 @@ export class TransportDispatcher implements Transport {
       const worker = new workerThreads.Worker(createWorkerSource(), {
         eval: true,
         workerData: {
-          config: this.config
+          config: createWorkerConfig(this.config)
         }
       });
 

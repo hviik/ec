@@ -22,6 +22,7 @@ const INTERNAL_OBJECT_PROPERTIES = new Set<string>([
   'isPrototypeOf',
   'propertyIsEnumerable'
 ]);
+const MAX_STATE_READS_PER_CONTEXT = 50;
 
 export class StateTracker {
   private readonly als: ALSManagerLike;
@@ -153,6 +154,10 @@ export class StateTracker {
     const context = this.als.getContext();
 
     if (context === undefined) {
+      return;
+    }
+
+    if (context.stateReads.length >= MAX_STATE_READS_PER_CONTEXT) {
       return;
     }
 

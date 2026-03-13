@@ -82,7 +82,8 @@ function resolveSerializationLimits(
 }
 
 export function resolveConfig(userConfig: Partial<SDKConfig> = {}): ResolvedConfig {
-  const bufferSize = userConfig.bufferSize ?? 1000;
+  const transport = userConfig.transport ?? { type: 'stdout' };
+  const bufferSize = userConfig.bufferSize ?? 200;
   const bufferMaxBytes = userConfig.bufferMaxBytes ?? 52428800;
   const maxPayloadSize = userConfig.maxPayloadSize ?? 32768;
   const maxConcurrentRequests = userConfig.maxConcurrentRequests ?? 50;
@@ -129,6 +130,12 @@ export function resolveConfig(userConfig: Partial<SDKConfig> = {}): ResolvedConf
   assertPositiveInteger(maxCachedLocals, 'maxCachedLocals');
   assertPositiveInteger(maxLocalsFrames, 'maxLocalsFrames');
 
+  if (transport.type === 'http') {
+    throw new Error(
+      'HTTP transport is not supported in local-only mode. Use "stdout" or "file" transport.'
+    );
+  }
+
   return {
     bufferSize,
     bufferMaxBytes,
@@ -140,7 +147,7 @@ export function resolveConfig(userConfig: Partial<SDKConfig> = {}): ResolvedConf
     envAllowlist: [...(userConfig.envAllowlist ?? DEFAULT_ENV_ALLOWLIST)],
     envBlocklist: [...(userConfig.envBlocklist ?? DEFAULT_ENV_BLOCKLIST)],
     encryptionKey: userConfig.encryptionKey,
-    transport: userConfig.transport ?? { type: 'stdout' },
+    transport,
     captureLocalVariables: userConfig.captureLocalVariables ?? true,
     captureDbBindParams: userConfig.captureDbBindParams ?? false,
     captureBody: userConfig.captureBody ?? true,

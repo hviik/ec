@@ -148,6 +148,26 @@ describe('SDK composition', () => {
     await shutdownFacade();
   });
 
+  it('keeps uncaughtException listener counts stable across shutdown and re-init', async () => {
+    const baseline = process.listenerCount('uncaughtException');
+    const first = init({ transport: { type: 'stdout' } });
+    const firstCount = process.listenerCount('uncaughtException');
+
+    expect(firstCount).toBeGreaterThan(baseline);
+
+    await shutdownFacade();
+
+    const second = init({ transport: { type: 'stdout' } });
+    const secondCount = process.listenerCount('uncaughtException');
+
+    expect(first).not.toBe(second);
+    expect(secondCount).toBe(firstCount);
+
+    await shutdownFacade();
+
+    expect(process.listenerCount('uncaughtException')).toBe(baseline);
+  });
+
   it('enableAutoShutdown registers signal handlers', async () => {
     const onceSpy = vi.spyOn(process, 'once');
     const sdk = createSDK();

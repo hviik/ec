@@ -12,9 +12,9 @@ import { RequestTracker } from '../../src/context/request-tracker';
 import { HeaderFilter } from '../../src/pii/header-filter';
 import { BodyCapture } from '../../src/recording/body-capture';
 import { HttpServerRecorder } from '../../src/recording/http-server';
-import { HttpClientRecorder } from '../../src/recording/http-client';
+import { ECD_INTERNAL, HttpClientRecorder } from '../../src/recording/http-client';
 import { UndiciRecorder } from '../../src/recording/undici';
-import { NetDnsRecorder } from '../../src/recording/net-dns';
+import { NetDnsRecorder, runAsInternal } from '../../src/recording/net-dns';
 import type { RequestContext } from '../../src/types';
 
 const require = createRequire(import.meta.url);
@@ -304,6 +304,26 @@ describe('Module 08 recorders', () => {
     recorder.shutdown();
   });
 
+  it('ignores SDK-internal outbound HTTP client requests', () => {
+    const config = createConfig();
+    const buffer = new IOEventBuffer({ capacity: 10, maxBytes: 100000 });
+    const recorder = new HttpClientRecorder({
+      buffer,
+      als: new ALSManager(),
+      bodyCapture: new BodyCapture(config),
+      headerFilter: new HeaderFilter(config)
+    });
+    const request = new MockClientRequest() as MockClientRequest & {
+      [ECD_INTERNAL]?: boolean;
+    };
+
+    request[ECD_INTERNAL] = true;
+    recorder.handleRequestStart({ request: request as unknown as ClientRequest });
+
+    expect(buffer.drain()).toEqual([]);
+    recorder.shutdown();
+  });
+
   it('records outbound HTTP client errors with contextLost when ALS is unavailable', () => {
     const config = createConfig();
     const buffer = new IOEventBuffer({ capacity: 10, maxBytes: 100000 });
@@ -402,6 +422,28 @@ describe('Module 08 recorders', () => {
     recorder.shutdown();
   });
 
+  it('ignores SDK-internal undici requests', () => {
+    const config = createConfig();
+    const buffer = new IOEventBuffer({ capacity: 10, maxBytes: 100000 });
+    const recorder = new UndiciRecorder({
+      buffer,
+      als: new ALSManager(),
+      headerFilter: new HeaderFilter(config)
+    });
+    const request = {
+      method: 'POST',
+      origin: 'https://undici.example.com',
+      path: '/items',
+      headers: {},
+      [ECD_INTERNAL]: true
+    };
+
+    recorder.handleRequestCreate({ request });
+
+    expect(buffer.drain()).toEqual([]);
+    recorder.shutdown();
+  });
+
   it('records DNS lookups through the internal patch and marks contextLost when ALS is unavailable', async () => {
     const config = createConfig();
     const buffer = new IOEventBuffer({ capacity: 10, maxBytes: 100000 });
@@ -444,6 +486,47 @@ describe('Module 08 recorders', () => {
         requestId: null
       });
       expect(slot?.durationMs).not.toBeNull();
+    } finally {
+      dnsModule.lookup = originalLookup;
+      recorder.shutdown();
+    }
+  });
+
+  it('skips DNS lookups executed through runAsInternal', async () => {
+    const buffer = new IOEventBuffer({ capacity: 10, maxBytes: 100000 });
+    const originalLookup = dnsModule.lookup;
+
+    dnsModule.lookup = ((
+      hostname: string,
+      callback: (error: null, address: string, family: number) => void
+    ) => {
+      callback(null, '127.0.0.1', 4);
+      return {} as never;
+    }) as typeof dnsModule.lookup;
+
+    const recorder = new NetDnsRecorder({
+      buffer,
+      als: new ALSManager()
+    });
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        runAsInternal(() => {
+          (dnsModule.lookup as unknown as (
+            hostname: string,
+            callback: (error: Error | null, address: string, family: number) => void
+          ) => void)('example.com', (error) => {
+            if (error !== null) {
+              reject(error);
+              return;
+            }
+
+            resolve();
+          });
+        });
+      });
+
+      expect(buffer.drain()).toEqual([]);
     } finally {
       dnsModule.lookup = originalLookup;
       recorder.shutdown();

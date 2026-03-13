@@ -18,7 +18,7 @@ describe('resolveConfig', () => {
     const resolved = resolveConfig({});
 
     expect(resolved).toEqual({
-      bufferSize: 1000,
+      bufferSize: 200,
       bufferMaxBytes: 52428800,
       maxPayloadSize: 32768,
       maxConcurrentRequests: 50,
@@ -130,6 +130,16 @@ describe('resolveConfig', () => {
 
     expect(resolved.bufferSize).toBe(250);
     expect('unknownKey' in resolved).toBe(false);
+  });
+
+  it('rejects HTTP transport in local-only mode', () => {
+    expect(() =>
+      resolveConfig({
+        transport: { type: 'http', url: 'https://example.com/collect' }
+      })
+    ).toThrow(
+      'HTTP transport is not supported in local-only mode. Use "stdout" or "file" transport.'
+    );
   });
 });
 

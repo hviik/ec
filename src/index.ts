@@ -14,10 +14,18 @@ export function init(config?: Partial<SDKConfig>): SDKInstance {
     throw new Error('SDK already initialized. Call shutdown() first.');
   }
 
-  instance = createSDK(config ?? {});
-  instance.activate();
+  const nextInstance = createSDK(config ?? {});
+  instance = nextInstance;
 
-  return instance;
+  try {
+    nextInstance.activate();
+  } catch (error) {
+    instance = null;
+    void nextInstance.shutdown().catch(() => undefined);
+    throw error;
+  }
+
+  return nextInstance;
 }
 
 export function captureError(error: Error): void {

@@ -4,6 +4,8 @@ import { EventEmitter } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { resolveConfig } from '../../src/config';
+import { ECD_INTERNAL, SDK_INTERNAL_REQUESTS } from '../../src/recording/http-client';
+import { isInternalCallActive } from '../../src/recording/internal';
 import { HttpTransport } from '../../src/transport/http-transport';
 import { FileTransport } from '../../src/transport/file-transport';
 import { StdoutTransport } from '../../src/transport/stdout-transport';
@@ -128,6 +130,45 @@ describe('HttpTransport', () => {
     });
   });
 
+  it('marks HTTP transport requests as SDK-internal during creation', async () => {
+    const requestSpy = vi.fn((requestOptions: unknown, callback: (response: EventEmitter) => void) => {
+      expect(isInternalCallActive()).toBe(true);
+
+      const response = new EventEmitter() as EventEmitter & { statusCode?: number };
+      const request = new EventEmitter() as EventEmitter & {
+        write: ReturnType<typeof vi.fn>;
+        end: ReturnType<typeof vi.fn>;
+        setTimeout: ReturnType<typeof vi.fn>;
+        destroy: ReturnType<typeof vi.fn>;
+        [ECD_INTERNAL]?: boolean;
+      };
+
+      request.write = vi.fn();
+      request.destroy = vi.fn();
+      request.setTimeout = vi.fn(() => request);
+      request.end = vi.fn(() => {
+        response.statusCode = 200;
+        callback(response);
+        response.emit('end');
+      });
+
+      void requestOptions;
+      return request;
+    });
+    httpsModule.request = requestSpy as typeof httpsModule.request;
+
+    const transport = new HttpTransport({
+      url: 'https://example.com/collect'
+    });
+
+    await transport.send('payload');
+
+    const request = requestSpy.mock.results[0]?.value as { [ECD_INTERNAL]?: boolean };
+
+    expect(request[ECD_INTERNAL]).toBe(true);
+    expect(SDK_INTERNAL_REQUESTS.has(request as object)).toBe(true);
+  });
+
   it('retries on failure and succeeds on a later attempt', async () => {
     const requestSpy = createMockRequest({ statuses: [500, 500, 200] });
     const delaySpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: TimerHandler) => {
@@ -245,23 +286,21 @@ describe('StdoutTransport', () => {
     Module.prototype.require = originalRequire;
   });
 
-  it('writes payloads to stdout and sendSync to stderr', async () => {
+  it('writes payloads to stdout and sendSync to stdout synchronously', async () => {
     const stdoutWrite = vi
       .spyOn(process.stdout, 'write')
       .mockImplementation(((chunk: string | Uint8Array, callback?: (error?: Error | null) => void) => {
         callback?.(null);
         return true;
       }) as typeof process.stdout.write);
-    const stderrWrite = vi
-      .spyOn(process.stderr, 'write')
-      .mockImplementation(() => true);
+    const writeSync = vi.spyOn(fs, 'writeSync').mockImplementation(() => 0);
     const transport = new StdoutTransport();
 
     await transport.send('payload');
     transport.sendSync('sync-payload');
 
     expect(stdoutWrite).toHaveBeenCalled();
-    expect(stderrWrite).toHaveBeenCalledWith('sync-payload\n');
+    expect(writeSync).toHaveBeenCalledWith(1, 'sync-payload\n');
   });
 });
 
@@ -338,5 +377,42 @@ describe('TransportDispatcher', () => {
 
     expect(timeoutSpy).toHaveBeenCalled();
     expect(worker.terminate).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to main-thread dispatch after a worker error', async () => {
+    class ErroringWorker extends MockWorker {
+      private sentCount = 0;
+
+      public override postMessage = vi.fn((message: { id: number; type: string }) => {
+        this.sentCount += 1;
+        this.emit('message', { id: message.id });
+
+        if (this.sentCount === 1) {
+          this.emit('error', new Error('worker crashed'));
+        }
+      });
+    }
+
+    const worker = new ErroringWorker();
+    const stdoutWrite = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(((chunk: string | Uint8Array, callback?: (error?: Error | null) => void) => {
+        callback?.(null);
+        return true;
+      }) as typeof process.stdout.write);
+
+    await withWorkerThreadsMock(() => worker, async () => {
+      const dispatcher = new TransportDispatcher({
+        config: resolveConfig({ transport: { type: 'stdout' } }),
+        encryption: null
+      });
+
+      await dispatcher.send('first');
+      await dispatcher.send('second');
+      await dispatcher.flush();
+    });
+
+    expect(worker.postMessage).toHaveBeenCalledTimes(1);
+    expect(stdoutWrite).toHaveBeenCalled();
   });
 });

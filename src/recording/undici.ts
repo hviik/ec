@@ -5,6 +5,7 @@
  */
 
 import type { IOEventSlot, RequestContext } from '../types';
+import { isSdkInternalRequest } from './internal';
 import { normalizeHeaderValue, toDurationMs } from './utils';
 
 interface IOEventBufferLike {
@@ -120,6 +121,10 @@ export class UndiciRecorder {
       const request = getRequestRecord(message.request);
 
       if (request === null) {
+        return;
+      }
+
+      if (isSdkInternalRequest(request)) {
         return;
       }
 
