@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Server } from 'node:http';
+import { channel } from 'node:diagnostics_channel';
 
 import {
   captureError as captureErrorFacade,
@@ -11,6 +12,10 @@ import {
 } from '../../src/index';
 import { createSDK } from '../../src/sdk';
 
+function createTestSDK() {
+  return createSDK({ allowUnencrypted: true });
+}
+
 describe('SDK composition', () => {
   afterEach(async () => {
     vi.restoreAllMocks();
@@ -18,7 +23,7 @@ describe('SDK composition', () => {
   });
 
   it('createSDK returns an SDKInstance with all components wired', async () => {
-    const sdk = createSDK();
+    const sdk = createTestSDK();
 
     try {
       expect(sdk.config).toBeDefined();
@@ -39,7 +44,7 @@ describe('SDK composition', () => {
 
   it('activate subscribes channels, installs patches, registers handlers, and starts lag measurement', async () => {
     const onSpy = vi.spyOn(process, 'on');
-    const sdk = createSDK();
+    const sdk = createTestSDK();
     const collectSpy = vi.spyOn(sdk.processMetadata, 'collectStartupMetadata');
     const installSpy = vi.spyOn(sdk['httpServerRecorder'], 'install');
     const lagSpy = vi.spyOn(sdk.processMetadata, 'startEventLoopLagMeasurement');
@@ -68,15 +73,19 @@ describe('SDK composition', () => {
     }
   });
 
-  it('does not patch Server.prototype.emit until activate and restores it on shutdown', async () => {
+  it('does not patch Server.prototype.emit until activate and restores fallback patch on shutdown', async () => {
     const originalEmit = Server.prototype.emit;
-    const sdk = createSDK();
+    const requestStartChannel = channel('http.server.request.start') as {
+      bindStore?: unknown;
+    };
+    const bindStoreAvailable = typeof requestStartChannel.bindStore === 'function';
+    const sdk = createTestSDK();
 
     try {
       expect(Server.prototype.emit).toBe(originalEmit);
 
       sdk.activate();
-      expect(Server.prototype.emit).not.toBe(originalEmit);
+      expect(Server.prototype.emit === originalEmit).toBe(bindStoreAvailable);
 
       await sdk.shutdown();
       expect(Server.prototype.emit).toBe(originalEmit);
@@ -88,7 +97,7 @@ describe('SDK composition', () => {
   });
 
   it('captureError delegates only when active', async () => {
-    const sdk = createSDK();
+    const sdk = createTestSDK();
     const captureSpy = vi.spyOn(sdk.errorCapturer, 'capture').mockReturnValue(null);
 
     try {
@@ -106,7 +115,7 @@ describe('SDK composition', () => {
 
   it('shutdown is idempotent and tears down components in order', async () => {
     const removeListenerSpy = vi.spyOn(process, 'removeListener');
-    const sdk = createSDK();
+    const sdk = createTestSDK();
     const unsubscribeSpy = vi.spyOn(sdk.channelSubscriber, 'unsubscribeAll');
     const unwrapSpy = vi.spyOn(sdk.patchManager, 'unwrapAll');
     const inspectorSpy = vi.spyOn(sdk.inspector, 'shutdown');
@@ -136,13 +145,13 @@ describe('SDK composition', () => {
   });
 
   it('init twice throws and shutdown then init again works', async () => {
-    const first = init({ transport: { type: 'stdout' } });
+    const first = init({ transport: { type: 'stdout' }, allowUnencrypted: true });
 
     expect(() => init()).toThrow('SDK already initialized. Call shutdown() first.');
 
     await shutdownFacade();
 
-    const second = init({ transport: { type: 'stdout' } });
+    const second = init({ transport: { type: 'stdout' }, allowUnencrypted: true });
 
     expect(first).not.toBe(second);
     await shutdownFacade();
@@ -150,14 +159,14 @@ describe('SDK composition', () => {
 
   it('keeps uncaughtException listener counts stable across shutdown and re-init', async () => {
     const baseline = process.listenerCount('uncaughtException');
-    const first = init({ transport: { type: 'stdout' } });
+    const first = init({ transport: { type: 'stdout' }, allowUnencrypted: true });
     const firstCount = process.listenerCount('uncaughtException');
 
     expect(firstCount).toBeGreaterThan(baseline);
 
     await shutdownFacade();
 
-    const second = init({ transport: { type: 'stdout' } });
+    const second = init({ transport: { type: 'stdout' }, allowUnencrypted: true });
     const secondCount = process.listenerCount('uncaughtException');
 
     expect(first).not.toBe(second);
@@ -170,7 +179,7 @@ describe('SDK composition', () => {
 
   it('enableAutoShutdown registers signal handlers', async () => {
     const onceSpy = vi.spyOn(process, 'once');
-    const sdk = createSDK();
+    const sdk = createTestSDK();
 
     try {
       sdk.enableAutoShutdown();
@@ -187,7 +196,7 @@ describe('SDK composition', () => {
     expect(() => trackStateFacade('cache', new Map())).toThrow('SDK is not initialized');
     expect(withContextFacade(() => 'value')).toBe('value');
 
-    const sdk = init({ transport: { type: 'stdout' } });
+    const sdk = init({ transport: { type: 'stdout' }, allowUnencrypted: true });
 
     try {
       const tracked = trackStateFacade('cache', new Map([['a', 1]]));
@@ -209,7 +218,8 @@ describe('SDK composition', () => {
       }) as typeof process.stdout.write);
 
     const sdk = init({
-      transport: { type: 'stdout' }
+      transport: { type: 'stdout' },
+      allowUnencrypted: true
     });
 
     try {

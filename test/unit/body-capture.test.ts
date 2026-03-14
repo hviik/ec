@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { createHash } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -9,6 +10,16 @@ import type { IOEventSlot } from '../../src/types';
 class MockIncomingMessage extends EventEmitter {}
 
 class MockServerResponse extends EventEmitter {
+  private readonly headers: Record<string, string> = {};
+
+  public setHeader(name: string, value: string): void {
+    this.headers[name.toLowerCase()] = value;
+  }
+
+  public getHeader(name: string): string | undefined {
+    return this.headers[name.toLowerCase()];
+  }
+
   public write(
     _chunk?: unknown,
     encoding?: unknown,
@@ -96,6 +107,7 @@ describe('BodyCapture', () => {
     req.emit('data', Buffer.from('he'));
     req.emit('data', Buffer.from('llo'));
     req.emit('end');
+    capture.materializeSlotBodies(slot);
 
     expect(Buffer.concat(seenByApp).toString()).toBe('hello');
     expect(slot.requestBody?.toString()).toBe('hello');
@@ -121,6 +133,7 @@ describe('BodyCapture', () => {
     req.emit('data', Buffer.from('def'));
     req.emit('data', Buffer.from('ghi'));
     req.emit('end');
+    capture.materializeSlotBodies(slot);
 
     expect(slot.requestBody?.toString()).toBe('abcde');
     expect(slot.requestBodyTruncated).toBe(true);
@@ -138,6 +151,7 @@ describe('BodyCapture', () => {
     req.on('data', () => undefined);
     req.emit('data', Buffer.from('hello'));
     req.emit('end');
+    capture.materializeSlotBodies(slot);
 
     expect(slot.requestBody).toBeNull();
     expect(onBytesChanged).not.toHaveBeenCalled();
@@ -160,6 +174,7 @@ describe('BodyCapture', () => {
 
     res.write('hel', 'utf8');
     res.end(Buffer.from('lo'));
+    capture.materializeSlotBodies(slot);
 
     expect(slot.responseBody?.toString()).toBe('hello');
     expect(onBytesChanged).toHaveBeenCalledWith(256, 261);
@@ -180,8 +195,40 @@ describe('BodyCapture', () => {
     );
 
     res.end('hello');
+    capture.materializeSlotBodies(slot);
 
     expect(slot.responseBody?.toString()).toBe('hello');
+  });
+
+  it('skips outbound response capture for disallowed content types after the first write', () => {
+    const capture = new BodyCapture({
+      maxPayloadSize: 32,
+      captureBody: true,
+      bodyCaptureContentTypes: ['application/json']
+    });
+    const res = new MockServerResponse();
+    const slot = createSlot();
+    const onBytesChanged = vi.fn();
+    const originalWrite = res.write;
+    const originalEnd = res.end;
+
+    res.setHeader('content-type', 'text/html; charset=utf-8');
+
+    capture.captureOutboundResponse(
+      res as unknown as ServerResponse,
+      slot,
+      slot.seq,
+      onBytesChanged
+    );
+
+    res.write('<html>');
+    res.end('</html>');
+    capture.materializeSlotBodies(slot);
+
+    expect(slot.responseBody).toBeNull();
+    expect(onBytesChanged).not.toHaveBeenCalled();
+    expect(res.write).toBe(originalWrite);
+    expect(res.end).toBe(originalEnd);
   });
 
   it('captures outbound client responses', () => {
@@ -200,6 +247,7 @@ describe('BodyCapture', () => {
     res.emit('data', Buffer.from('he'));
     res.emit('data', Buffer.from('llo'));
     res.emit('end');
+    capture.materializeSlotBodies(slot);
 
     expect(slot.responseBody?.toString()).toBe('hello');
     expect(onBytesChanged).toHaveBeenCalledWith(256, 261);
@@ -258,7 +306,52 @@ describe('BodyCapture', () => {
 
     res.write('caf\xe9', 'latin1');
     res.end();
+    capture.materializeSlotBodies(slot);
 
     expect(slot.responseBody).toEqual(Buffer.from('caf\xe9', 'latin1'));
+  });
+
+  it('computes body digests only when explicitly enabled', () => {
+    const disabled = new BodyCapture({
+      maxPayloadSize: 32,
+      captureBody: true,
+      captureBodyDigest: false
+    });
+    const enabled = new BodyCapture({
+      maxPayloadSize: 32,
+      captureBody: true,
+      captureBodyDigest: true
+    });
+    const disabledSlot = createSlot();
+    const enabledSlot = createSlot({ seq: 2 });
+    const disabledReq = new MockIncomingMessage();
+    const enabledReq = new MockIncomingMessage();
+
+    disabled.captureInboundRequest(
+      disabledReq as IncomingMessage,
+      disabledSlot,
+      disabledSlot.seq,
+      () => undefined
+    );
+    enabled.captureInboundRequest(
+      enabledReq as IncomingMessage,
+      enabledSlot,
+      enabledSlot.seq,
+      () => undefined
+    );
+
+    disabledReq.on('data', () => undefined);
+    enabledReq.on('data', () => undefined);
+    disabledReq.emit('data', Buffer.from('hello'));
+    enabledReq.emit('data', Buffer.from('hello'));
+    disabledReq.emit('end');
+    enabledReq.emit('end');
+    disabled.materializeSlotBodies(disabledSlot);
+    enabled.materializeSlotBodies(enabledSlot);
+
+    expect(disabledSlot.requestBodyDigest).toBeNull();
+    expect(enabledSlot.requestBodyDigest).toBe(
+      createHash('sha256').update('hello').digest('hex')
+    );
   });
 });

@@ -16,8 +16,24 @@ export const JWT_REGEX =
 
 export const BEARER_REGEX = /\bBearer\s+[a-zA-Z0-9_\-.~+/]+=*\b/gi;
 
+export const BASIC_AUTH_REGEX = /\bBasic\s+[A-Za-z0-9+/]+=*\b/gi;
+
+export const AWS_ACCESS_KEY_REGEX = /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g;
+
+export const GITHUB_TOKEN_REGEX =
+  /\b(?:ghp|gho)_[A-Za-z0-9]{20,255}\b|github_pat_[A-Za-z0-9_]{20,255}\b/g;
+
+export const STRIPE_KEY_REGEX = /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/g;
+
+export const GENERIC_SK_KEY_REGEX = /\bsk-[A-Za-z0-9]{10,}\b/g;
+
+export const PHONE_REGEX =
+  /(?:\+\d{1,3}[\s().-]*\d[\d(). -]{7,}\d|\(\d{2,4}\)[\s().-]*\d[\d(). -]{5,}\d|\b\d{3}[\s().-]\d{3}[\s().-]\d{4,}\b)/g;
+
+export const IPV4_REGEX = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
+
 export const SENSITIVE_KEY_REGEX =
-  /password|passwd|secret|token|key|auth|credential|ssn|social.*security|credit.*card|card.*number|cvv|cvc|expir/i;
+  /password|passwd|secret|token|key|auth|credential|ssn|social.*security|credit.*card|card.*number|cvv|cvc|expir|phone|session|cookie|oauth|private/i;
 
 export function isValidLuhn(digits: string): boolean {
   if (!/^\d{13,19}$/.test(digits)) {

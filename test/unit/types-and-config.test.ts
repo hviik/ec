@@ -47,10 +47,19 @@ describe('resolveConfig', () => {
       ],
       envBlocklist: [/key|secret|token|password|credential|auth|private/i],
       encryptionKey: undefined,
+      allowUnencrypted: false,
       transport: { type: 'stdout' },
-      captureLocalVariables: true,
+      captureLocalVariables: false,
       captureDbBindParams: false,
       captureBody: true,
+      captureBodyDigest: false,
+      bodyCaptureContentTypes: [
+        'application/json',
+        'application/x-www-form-urlencoded',
+        'text/plain',
+        'application/xml',
+        'multipart/form-data'
+      ],
       piiScrubber: undefined,
       replaceDefaultScrubber: false,
       serialization: {
@@ -64,6 +73,7 @@ describe('resolveConfig', () => {
       maxLocalsCollectionsPerSecond: 20,
       maxCachedLocals: 50,
       maxLocalsFrames: 5,
+      uncaughtExceptionExitDelayMs: 500,
       allowInsecureTransport: false
     });
   });
@@ -72,12 +82,16 @@ describe('resolveConfig', () => {
     const resolved = resolveConfig({
       bufferSize: 500,
       captureBody: false,
+      captureBodyDigest: true,
+      bodyCaptureContentTypes: ['application/json'],
       serialization: { maxDepth: 4 },
       transport: { type: 'file', path: '/tmp/ecd.log' }
     });
 
     expect(resolved.bufferSize).toBe(500);
     expect(resolved.captureBody).toBe(false);
+    expect(resolved.captureBodyDigest).toBe(true);
+    expect(resolved.bodyCaptureContentTypes).toEqual(['application/json']);
     expect(resolved.serialization).toEqual({
       maxDepth: 4,
       maxArrayItems: 20,

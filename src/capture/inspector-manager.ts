@@ -7,6 +7,7 @@
 import path = require('node:path');
 
 import type { CapturedFrame, ResolvedConfig } from '../types';
+import { looksLikeHighEntropySecret } from '../pii/scrubber';
 
 const SENSITIVE_VAR_RE =
   /password|passwd|secret|token|key|auth|credential|ssn|social.*security|credit.*card|card.*number|cvv|cvc|expir/i;
@@ -352,6 +353,9 @@ export class InspectorManager {
 
     if (object.type === 'string') {
       const value = typeof object.value === 'string' ? object.value : '';
+      if (looksLikeHighEntropySecret(value)) {
+        return '[REDACTED]';
+      }
       return value.length > STRING_LIMIT
         ? `${value.slice(0, STRING_LIMIT)}...[truncated, ${value.length} chars]`
         : value;

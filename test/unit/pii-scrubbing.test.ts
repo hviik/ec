@@ -144,6 +144,13 @@ describe('Scrubber', () => {
     ]);
   });
 
+  it('fast-paths URL scrubbing when no query string is present', () => {
+    const scrubber = new Scrubber(resolveConfig({}));
+
+    expect(scrubber.scrubUrl('/health')).toBe('/health');
+    expect(scrubber.scrubUrl('https://example.com/path')).toBe('https://example.com/path');
+  });
+
   it('scrubs environment variables using allowlist and blocklist precedence', () => {
     const scrubber = new Scrubber(
       resolveConfig({

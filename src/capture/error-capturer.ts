@@ -11,9 +11,19 @@ import type { RateLimiter } from '../security/rate-limiter';
 import type { ALSManager } from '../context/als-manager';
 import type { RequestTracker } from '../context/request-tracker';
 import type { InspectorManager } from './inspector-manager';
+import { finalizePackageAssemblyResult } from './package-builder';
 import type { PackageBuilder } from './package-builder';
 import type { ProcessMetadata } from './process-metadata';
-import type { ErrorInfo, ErrorPackage, IOEventSlot, RequestContext, ResolvedConfig } from '../types';
+import type {
+  ErrorInfo,
+  ErrorPackage,
+  ErrorPackageParts,
+  ErrorPackageRequestContextData,
+  IOEventSlot,
+  PackageAssemblyResult,
+  RequestContext,
+  ResolvedConfig
+} from '../types';
 
 interface IOEventBufferLike {
   filterByRequestId(requestId: string): IOEventSlot[];
@@ -23,6 +33,20 @@ interface IOEventBufferLike {
 
 interface TransportLike {
   send(payload: string): void;
+}
+
+interface BodyCaptureLike {
+  materializeSlotBodies(slot: IOEventSlot): void;
+  materializeContextBody(context: RequestContext): void;
+}
+
+interface PackageAssemblyDispatcherLike {
+  isAvailable(): boolean;
+  assemble(
+    parts: ErrorPackageParts,
+    options?: { timeoutMs?: number }
+  ): Promise<PackageAssemblyResult>;
+  shutdown(options?: { timeoutMs?: number }): Promise<void>;
 }
 
 function extractCustomProperties(error: Error): Record<string, unknown> {
@@ -89,7 +113,11 @@ export class ErrorCapturer {
 
   private readonly encryption: Encryption | null;
 
+  private readonly bodyCapture: BodyCaptureLike;
+
   private readonly config: ResolvedConfig;
+
+  private readonly packageAssemblyDispatcher: PackageAssemblyDispatcherLike | null;
 
   public constructor(deps: {
     buffer: IOEventBufferLike;
@@ -101,7 +129,9 @@ export class ErrorCapturer {
     packageBuilder: PackageBuilder;
     transport: TransportLike;
     encryption?: Encryption | null;
+    bodyCapture: BodyCaptureLike;
     config: ResolvedConfig;
+    packageAssemblyDispatcher?: PackageAssemblyDispatcherLike | null;
   }) {
     this.buffer = deps.buffer;
     this.als = deps.als;
@@ -112,7 +142,9 @@ export class ErrorCapturer {
     this.packageBuilder = deps.packageBuilder;
     this.transport = deps.transport;
     this.encryption = deps.encryption ?? null;
+    this.bodyCapture = deps.bodyCapture;
     this.config = deps.config;
+    this.packageAssemblyDispatcher = deps.packageAssemblyDispatcher ?? null;
   }
 
   public capture(error: Error, _options?: { isUncaught?: boolean }): ErrorPackage | null {
@@ -130,9 +162,15 @@ export class ErrorCapturer {
       const ioTimeline = context === undefined
         ? this.buffer.getRecent(20)
         : this.buffer.filterByRequestId(context.requestId);
+      if (context !== undefined) {
+        this.bodyCapture.materializeContextBody(context);
+      }
+      for (const event of ioTimeline) {
+        this.bodyCapture.materializeSlotBodies(event);
+      }
       const stateReads = context?.stateReads ?? [];
       const concurrentRequests = this.requestTracker.getSummaries();
-      const packageObject = this.packageBuilder.build({
+      const parts: ErrorPackageParts = {
         error: {
           type: serializedError.type,
           message: serializedError.message,
@@ -141,7 +179,7 @@ export class ErrorCapturer {
           properties: serializedError.properties
         },
         localVariables: locals,
-        requestContext: context,
+        requestContext: this.toRequestContextData(context),
         ioTimeline,
         stateReads,
         concurrentRequests,
@@ -153,25 +191,18 @@ export class ErrorCapturer {
         alsContextAvailable: context !== undefined,
         stateTrackingEnabled: context !== undefined,
         usedAmbientEvents
-      });
+      };
 
-      packageObject.completeness.encrypted = this.encryption !== null;
-
-      const payload =
-        this.encryption === null
-          ? JSON.stringify(packageObject)
-          : JSON.stringify(this.encryption.encrypt(JSON.stringify(packageObject)));
-
-      try {
-        this.transport.send(payload);
-      } catch (transportError) {
-        const message =
-          transportError instanceof Error ? transportError.message : String(transportError);
-
-        packageObject.completeness.captureFailures.push(`transport: ${message}`);
+      if (
+        this.packageAssemblyDispatcher !== null &&
+        this.packageAssemblyDispatcher.isAvailable() &&
+        this.config.piiScrubber === undefined
+      ) {
+        void this.dispatchPackageAssembly(parts);
+        return null;
       }
 
-      return packageObject;
+      return this.captureInline(parts);
     } catch (captureError) {
       const message =
         captureError instanceof Error ? captureError.message : String(captureError);
@@ -201,6 +232,75 @@ export class ErrorCapturer {
 
       captureFailures.push(`als: ${message}`);
       return undefined;
+    }
+  }
+
+  public async shutdown(options?: { timeoutMs?: number }): Promise<void> {
+    if (this.packageAssemblyDispatcher === null) {
+      return;
+    }
+
+    await this.packageAssemblyDispatcher.shutdown(options);
+  }
+
+  private toRequestContextData(
+    context: RequestContext | undefined
+  ): ErrorPackageRequestContextData | undefined {
+    if (context === undefined) {
+      return undefined;
+    }
+
+    return {
+      requestId: context.requestId,
+      startTime: context.startTime,
+      method: context.method,
+      url: context.url,
+      headers: { ...context.headers },
+      body: context.body,
+      bodyTruncated: context.bodyTruncated
+    };
+  }
+
+  private captureInline(parts: ErrorPackageParts): ErrorPackage {
+    const { packageObject, payload } = finalizePackageAssemblyResult({
+      packageObject: this.packageBuilder.build(parts),
+      config: this.config
+    });
+    this.dispatchTransport(packageObject, payload);
+    return packageObject;
+  }
+
+  private async dispatchPackageAssembly(parts: ErrorPackageParts): Promise<void> {
+    try {
+      const result = await this.packageAssemblyDispatcher?.assemble(parts);
+
+      if (result === undefined) {
+        throw new Error('Package assembly worker returned no result');
+      }
+
+      this.dispatchTransport(result.packageObject, result.payload);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      parts.captureFailures.push(`package-worker: ${message}`);
+
+      try {
+        this.captureInline(parts);
+      } catch (fallbackError) {
+        const fallbackMessage =
+          fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+        console.warn(`[ECD] Error capture fallback failed: ${fallbackMessage}`);
+      }
+    }
+  }
+
+  private dispatchTransport(packageObject: ErrorPackage, payload: string): void {
+    try {
+      this.transport.send(payload);
+    } catch (transportError) {
+      const message =
+        transportError instanceof Error ? transportError.message : String(transportError);
+
+      packageObject.completeness.captureFailures.push(`transport: ${message}`);
     }
   }
 }

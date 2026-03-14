@@ -18,6 +18,8 @@ export class RequestTracker {
 
   private readonly contexts = new Map<string, RequestContext>();
 
+  private capacityWarningActive = false;
+
   private readonly sweepTimer: NodeJS.Timeout;
 
   public constructor(config: RequestTrackerConfig) {
@@ -31,7 +33,10 @@ export class RequestTracker {
 
   public add(ctx: RequestContext): void {
     if (this.contexts.size >= this.maxConcurrent) {
-      console.debug('[ECD] RequestTracker at capacity; dropping tracked request');
+      if (!this.capacityWarningActive) {
+        this.capacityWarningActive = true;
+        console.debug('[ECD] RequestTracker at capacity; dropping tracked request');
+      }
       return;
     }
 
@@ -40,6 +45,7 @@ export class RequestTracker {
 
   public remove(requestId: string): void {
     this.contexts.delete(requestId);
+    this.resetCapacityWarningIfAvailable();
   }
 
   public getAll(): RequestContext[] {
@@ -62,6 +68,7 @@ export class RequestTracker {
   public shutdown(): void {
     clearInterval(this.sweepTimer);
     this.contexts.clear();
+    this.capacityWarningActive = false;
   }
 
   private sweepExpired(): void {
@@ -72,6 +79,14 @@ export class RequestTracker {
       if (now - context.startTime > ttlNs) {
         this.contexts.delete(requestId);
       }
+    }
+
+    this.resetCapacityWarningIfAvailable();
+  }
+
+  private resetCapacityWarningIfAvailable(): void {
+    if (this.contexts.size < this.maxConcurrent) {
+      this.capacityWarningActive = false;
     }
   }
 }

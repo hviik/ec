@@ -7,6 +7,13 @@ import { InspectorManager } from '../../src/capture/inspector-manager';
 
 const originalRequire = Module.prototype.require;
 
+function createInspectorConfig(overrides = {}) {
+  return resolveConfig({
+    captureLocalVariables: true,
+    ...overrides
+  });
+}
+
 interface MockSession {
   connect: ReturnType<typeof vi.fn>;
   disconnect: ReturnType<typeof vi.fn>;
@@ -142,7 +149,7 @@ describe('InspectorManager', () => {
     const inspector = createInspectorMock();
 
     withInspectorMock(inspector.inspectorModule, () => {
-      const manager = new InspectorManager(resolveConfig({}));
+      const manager = new InspectorManager(createInspectorConfig());
 
       expect(manager.isAvailable()).toBe(true);
       expect(inspector.session.connect).toHaveBeenCalledTimes(1);
@@ -178,7 +185,7 @@ describe('InspectorManager', () => {
     const inspector = createInspectorMock();
 
     withInspectorMock(inspector.inspectorModule, () => {
-      const manager = new InspectorManager(resolveConfig({}));
+      const manager = new InspectorManager(createInspectorConfig());
 
       manager.ensureDebuggerActive();
       timeoutTimers.timers[0]?.fn();
@@ -196,7 +203,7 @@ describe('InspectorManager', () => {
     const inspector = createInspectorMock();
 
     withInspectorMock(inspector.inspectorModule, () => {
-      const manager = new InspectorManager(resolveConfig({}));
+      const manager = new InspectorManager(createInspectorConfig());
 
       inspector.emitPaused({
         reason: 'other',
@@ -217,7 +224,7 @@ describe('InspectorManager', () => {
     const inspector = createInspectorMock();
 
     withInspectorMock(inspector.inspectorModule, () => {
-      const manager = new InspectorManager(resolveConfig({}));
+      const manager = new InspectorManager(createInspectorConfig());
 
       inspector.emitPaused({
         reason: 'exception',
@@ -257,7 +264,7 @@ describe('InspectorManager', () => {
     });
 
     withInspectorMock(inspector.inspectorModule, () => {
-      const manager = new InspectorManager(resolveConfig({}));
+      const manager = new InspectorManager(createInspectorConfig());
 
       inspector.emitPaused({
         reason: 'exception',
@@ -309,7 +316,7 @@ describe('InspectorManager', () => {
 
     withInspectorMock(inspector.inspectorModule, () => {
       const manager = new InspectorManager(
-        resolveConfig({
+        createInspectorConfig({
           maxLocalsCollectionsPerSecond: 1,
           maxCachedLocals: 1
         })
@@ -360,7 +367,7 @@ describe('InspectorManager', () => {
     const inspector = createInspectorMock();
 
     withInspectorMock(inspector.inspectorModule, () => {
-      const manager = new InspectorManager(resolveConfig({})) as unknown as {
+      const manager = new InspectorManager(createInspectorConfig()) as unknown as {
         _serializeRemoteObject(object: unknown): unknown;
         shutdown(): void;
       };
@@ -431,7 +438,7 @@ describe('InspectorManager', () => {
     const inspector = createInspectorMock();
 
     withInspectorMock(inspector.inspectorModule, () => {
-      const manager = new InspectorManager(resolveConfig({})) as unknown as {
+      const manager = new InspectorManager(createInspectorConfig()) as unknown as {
         _isAppFrame(url: string | undefined): boolean;
         shutdown(): void;
       };
@@ -447,7 +454,7 @@ describe('InspectorManager', () => {
     const inspector = createInspectorMock();
 
     withInspectorMock(inspector.inspectorModule, () => {
-      const manager = new InspectorManager(resolveConfig({})) as unknown as {
+      const manager = new InspectorManager(createInspectorConfig()) as unknown as {
         cache: Map<string, { frames: unknown[]; timestamp: number }>;
         shutdown(): void;
       };
@@ -474,7 +481,7 @@ describe('InspectorManager', () => {
     });
 
     withInspectorMock(inspector.inspectorModule, () => {
-      const manager = new InspectorManager(resolveConfig({})) as unknown as {
+      const manager = new InspectorManager(createInspectorConfig()) as unknown as {
         _onPaused(params: unknown): void;
         shutdown(): void;
       };
@@ -507,7 +514,7 @@ describe('InspectorManager', () => {
     const inspector = createInspectorMock();
 
     withInspectorMock(inspector.inspectorModule, () => {
-      const manager = new InspectorManager(resolveConfig({})) as unknown as {
+      const manager = new InspectorManager(createInspectorConfig()) as unknown as {
         cache: Map<string, { frames: unknown[]; timestamp: number }>;
         isAvailable(): boolean;
         shutdown(): void;

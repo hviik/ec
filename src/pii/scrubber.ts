@@ -1,43 +1,115 @@
 /**
  * @module 04-pii-scrubbing
  * @spec spec/04-pii-scrubbing.md
- * @dependencies types.ts, config.ts, clone-and-limit.ts
+ * @dependencies types.ts, config.ts
  */
 
 import { homedir } from 'node:os';
 
-import { STANDARD_LIMITS, cloneAndLimit } from '../serialization/clone-and-limit';
-import type { ResolvedConfig } from '../types';
+import type { ResolvedConfig, SerializationLimits } from '../types';
 import {
+  AWS_ACCESS_KEY_REGEX,
+  BASIC_AUTH_REGEX,
   BEARER_REGEX,
   CREDIT_CARD_REGEX,
   EMAIL_REGEX,
+  GENERIC_SK_KEY_REGEX,
+  GITHUB_TOKEN_REGEX,
+  IPV4_REGEX,
   JWT_REGEX,
+  PHONE_REGEX,
   SENSITIVE_KEY_REGEX,
   SSN_REGEX,
+  STRIPE_KEY_REGEX,
   isValidLuhn
 } from './patterns';
 
 const REDACTED = '[REDACTED]';
 const DEPTH_LIMIT = '[DEPTH_LIMIT]';
 
-function cloneRegex(pattern: RegExp): RegExp {
-  return new RegExp(pattern.source, pattern.flags);
+function resetRegex(pattern: RegExp): RegExp {
+  pattern.lastIndex = 0;
+  return pattern;
 }
 
 function replacePattern(value: string, pattern: RegExp): string {
-  return value.replace(cloneRegex(pattern), REDACTED);
+  return value.replace(resetRegex(pattern), REDACTED);
 }
 
 function replaceCreditCards(value: string): string {
-  return value.replace(cloneRegex(CREDIT_CARD_REGEX), (match) =>
+  return value.replace(resetRegex(CREDIT_CARD_REGEX), (match) =>
     isValidLuhn(match) ? REDACTED : match
   );
 }
 
 function matchesRegex(pattern: RegExp, value: string): boolean {
-  pattern.lastIndex = 0;
-  return pattern.test(value);
+  return resetRegex(pattern).test(value);
+}
+
+function truncateString(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, maxLength)}...[truncated, ${value.length} chars]`;
+}
+
+function shannonEntropy(value: string): number {
+  if (value.length === 0) {
+    return 0;
+  }
+
+  const counts = new Map<string, number>();
+  for (const char of value) {
+    counts.set(char, (counts.get(char) ?? 0) + 1);
+  }
+
+  let entropy = 0;
+  for (const count of counts.values()) {
+    const probability = count / value.length;
+    entropy -= probability * Math.log2(probability);
+  }
+
+  return entropy;
+}
+
+export function looksLikeHighEntropySecret(value: string): boolean {
+  if (value.length < 24 || value.length > 4096) {
+    return false;
+  }
+
+  if (!/^[A-Za-z0-9+/=_-]+$/.test(value)) {
+    return false;
+  }
+
+  const entropy = shannonEntropy(value);
+  return entropy >= 4.2;
+}
+
+function isTextualContentType(contentType: string | undefined): boolean {
+  if (!contentType) {
+    return false;
+  }
+
+  return (
+    contentType.startsWith('text/') ||
+    contentType.includes('json') ||
+    contentType.includes('xml') ||
+    contentType.includes('javascript') ||
+    contentType.includes('x-www-form-urlencoded')
+  );
+}
+
+function detectBodyEncoding(contentType: string | undefined): BufferEncoding {
+  if (!contentType) {
+    return 'utf8';
+  }
+
+  if (contentType.includes('charset=latin1') || contentType.includes('charset=iso-8859-1')) {
+    return 'latin1';
+  }
+
+  return 'utf8';
 }
 
 export class Scrubber {
@@ -52,32 +124,26 @@ export class Scrubber {
 
   public scrubObject(obj: object): object {
     try {
-      const cloned = cloneAndLimit(obj, STANDARD_LIMITS);
-      return this.scrubValue('', cloned) as object;
+      const scrubbed = this.scrubValue('', obj);
+      return typeof scrubbed === 'object' && scrubbed !== null ? (scrubbed as object) : {};
     } catch {
-      return {} as object;
+      return {};
     }
   }
 
   public scrubValue(key: string, value: unknown): unknown {
     try {
       if (this.config.piiScrubber === undefined) {
-        return this.applyDefaultScrubber(key, value, 0, new WeakSet<object>());
+        return this.applyDefaultScrubber(key, value);
       }
 
       if (this.config.replaceDefaultScrubber) {
         return this.applyCustomScrubber(key, value, () =>
-          this.applyDefaultScrubber(key, value, 0, new WeakSet<object>())
+          this.applyDefaultScrubber(key, value)
         );
       }
 
-      const defaultScrubbed = this.applyDefaultScrubber(
-        key,
-        value,
-        0,
-        new WeakSet<object>()
-      );
-
+      const defaultScrubbed = this.applyDefaultScrubber(key, value);
       return this.applyCustomScrubber(key, defaultScrubbed, () => defaultScrubbed);
     } catch {
       return REDACTED;
@@ -131,6 +197,51 @@ export class Scrubber {
     return scrubbed;
   }
 
+  public scrubUrl(rawUrl: string): string {
+    if (rawUrl === '' || !rawUrl.includes('?')) {
+      return rawUrl;
+    }
+
+    try {
+      const hasScheme = /^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(rawUrl);
+      const parsed = hasScheme
+        ? new URL(rawUrl)
+        : new URL(rawUrl, 'http://ecd.local');
+
+      for (const [key, value] of parsed.searchParams.entries()) {
+        parsed.searchParams.set(key, String(this.scrubValue(key, value)));
+      }
+
+      if (hasScheme) {
+        return parsed.toString();
+      }
+
+      return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    } catch {
+      return this.scrubString(rawUrl);
+    }
+  }
+
+  public scrubBodyBuffer(
+    buffer: Buffer,
+    headers: Record<string, string> | null | undefined
+  ): Buffer {
+    const contentType = headers?.['content-type'];
+    if (!isTextualContentType(contentType)) {
+      return buffer;
+    }
+
+    const encoding = detectBodyEncoding(contentType);
+    const decoded = buffer.toString(encoding);
+    const scrubbed = this.scrubString(decoded);
+
+    if (scrubbed === decoded) {
+      return buffer;
+    }
+
+    return Buffer.from(scrubbed, encoding);
+  }
+
   private applyCustomScrubber(
     key: string,
     value: unknown,
@@ -145,39 +256,120 @@ export class Scrubber {
     }
   }
 
-  private applyDefaultScrubber(
-    key: string,
-    value: unknown,
-    depth: number,
-    visited: WeakSet<object>
-  ): unknown {
+  private applyDefaultScrubber(key: string, value: unknown): unknown {
     try {
-      return this.scrubRecursive(key, value, depth, visited);
+      return this.cloneAndScrub(
+        key,
+        value,
+        0,
+        new WeakSet<object>(),
+        this.config.serialization
+      );
     } catch {
       return REDACTED;
     }
   }
 
-  private scrubRecursive(
+  private cloneAndScrub(
     key: string,
     value: unknown,
     depth: number,
-    visited: WeakSet<object>
+    visited: WeakSet<object>,
+    limits: SerializationLimits
   ): unknown {
-    if (depth > 10) {
+    if (depth > Math.max(limits.maxDepth, 10)) {
       return DEPTH_LIMIT;
     }
 
-    if (SENSITIVE_KEY_REGEX.test(key)) {
+    if (matchesRegex(SENSITIVE_KEY_REGEX, key)) {
       return REDACTED;
     }
 
-    if (typeof value === 'string') {
-      return this.scrubString(value);
+    if (value === null || value === undefined) {
+      return null;
     }
 
-    if (value === null || value === undefined) {
-      return value ?? null;
+    if (typeof value === 'string') {
+      return truncateString(this.scrubString(value), limits.maxStringLength);
+    }
+
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? value : null;
+    }
+
+    if (typeof value === 'boolean') {
+      return value;
+    }
+
+    if (typeof value === 'bigint') {
+      return {
+        _type: 'BigInt',
+        value: value.toString()
+      };
+    }
+
+    if (typeof value === 'symbol') {
+      return `[Symbol: ${value.description ?? ''}]`;
+    }
+
+    if (typeof value === 'function') {
+      return `[Function: ${value.name || 'anonymous'}]`;
+    }
+
+    if (value instanceof Date) {
+      return value.toISOString();
+    }
+
+    if (value instanceof RegExp) {
+      return {
+        _type: 'RegExp',
+        source: value.source,
+        flags: value.flags
+      };
+    }
+
+    if (value instanceof Error) {
+      return {
+        _type: 'Error',
+        name: value.name,
+        message: this.scrubString(value.message),
+        stack: truncateString(this.scrubString(value.stack ?? ''), limits.maxStringLength)
+      };
+    }
+
+    if (Buffer.isBuffer(value)) {
+      return {
+        _type: 'Buffer',
+        encoding: 'base64',
+        data: truncateString(value.toString('base64'), limits.maxStringLength),
+        length: value.length
+      };
+    }
+
+    if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+      const sample: number[] = [];
+      const typedArray = value as unknown as ArrayLike<number>;
+      const sampleCount = Math.min(
+        typedArray.length ?? limits.maxArrayItems,
+        limits.maxArrayItems
+      );
+
+      for (let index = 0; index < sampleCount; index += 1) {
+        sample.push(Number(typedArray[index]));
+      }
+
+      return {
+        _type: value.constructor.name,
+        length: (value as unknown as ArrayLike<unknown>).length ?? 0,
+        sample
+      };
+    }
+
+    if (value instanceof ArrayBuffer) {
+      return {
+        _type: 'ArrayBuffer',
+        byteLength: value.byteLength
+      };
     }
 
     if (Array.isArray(value)) {
@@ -186,10 +378,95 @@ export class Scrubber {
       }
 
       visited.add(value);
+      try {
+        const itemCount = Math.min(value.length, limits.maxArrayItems);
+        const items = new Array<unknown>(itemCount);
 
-      return value.map((entry, index) =>
-        this.applyDefaultScrubber(String(index), entry, depth + 1, visited)
-      );
+        for (let index = 0; index < itemCount; index += 1) {
+          items[index] = this.cloneAndScrub(
+            String(index),
+            value[index],
+            depth + 1,
+            visited,
+            limits
+          );
+        }
+
+        if (value.length <= limits.maxArrayItems) {
+          return items;
+        }
+
+        return {
+          _items: items,
+          _truncated: true,
+          _originalLength: value.length
+        };
+      } finally {
+        visited.delete(value);
+      }
+    }
+
+    if (value instanceof Map) {
+      if (visited.has(value)) {
+        return '[Circular]';
+      }
+
+      visited.add(value);
+      try {
+        const entries: Array<[unknown, unknown]> = [];
+        let index = 0;
+
+        for (const [entryKey, entryValue] of value.entries()) {
+          if (index >= limits.maxArrayItems) {
+            break;
+          }
+
+          entries.push([
+            this.cloneAndScrub(String(index), entryKey, depth + 1, visited, limits),
+            this.cloneAndScrub(String(index), entryValue, depth + 1, visited, limits)
+          ]);
+          index += 1;
+        }
+
+        return {
+          _type: 'Map',
+          size: value.size,
+          entries
+        };
+      } finally {
+        visited.delete(value);
+      }
+    }
+
+    if (value instanceof Set) {
+      if (visited.has(value)) {
+        return '[Circular]';
+      }
+
+      visited.add(value);
+      try {
+        const values: unknown[] = [];
+        let index = 0;
+
+        for (const entryValue of value.values()) {
+          if (index >= limits.maxArrayItems) {
+            break;
+          }
+
+          values.push(
+            this.cloneAndScrub(String(index), entryValue, depth + 1, visited, limits)
+          );
+          index += 1;
+        }
+
+        return {
+          _type: 'Set',
+          size: value.size,
+          values
+        };
+      } finally {
+        visited.delete(value);
+      }
     }
 
     if (typeof value === 'object') {
@@ -198,26 +475,34 @@ export class Scrubber {
       }
 
       visited.add(value);
+      try {
+        const scrubbed: Record<string, unknown> = {};
+        const keys = Object.keys(value as Record<string, unknown>);
+        const keyCount = Math.min(keys.length, limits.maxObjectKeys);
 
-      const scrubbed: Record<string, unknown> = {};
-
-      for (const objectKey of Object.keys(value)) {
-        try {
-          scrubbed[objectKey] = this.applyDefaultScrubber(
+        for (let index = 0; index < keyCount; index += 1) {
+          const objectKey = keys[index] as string;
+          scrubbed[objectKey] = this.cloneAndScrub(
             objectKey,
             (value as Record<string, unknown>)[objectKey],
             depth + 1,
-            visited
+            visited,
+            limits
           );
-        } catch {
-          scrubbed[objectKey] = REDACTED;
         }
-      }
 
-      return scrubbed;
+        if (keys.length > limits.maxObjectKeys) {
+          scrubbed._truncated = true;
+          scrubbed._originalKeyCount = keys.length;
+        }
+
+        return scrubbed;
+      } finally {
+        visited.delete(value);
+      }
     }
 
-    return value;
+    return null;
   }
 
   private scrubString(value: string): string {
@@ -228,6 +513,17 @@ export class Scrubber {
     scrubbed = replacePattern(scrubbed, SSN_REGEX);
     scrubbed = replacePattern(scrubbed, JWT_REGEX);
     scrubbed = replacePattern(scrubbed, BEARER_REGEX);
+    scrubbed = replacePattern(scrubbed, BASIC_AUTH_REGEX);
+    scrubbed = replacePattern(scrubbed, AWS_ACCESS_KEY_REGEX);
+    scrubbed = replacePattern(scrubbed, GITHUB_TOKEN_REGEX);
+    scrubbed = replacePattern(scrubbed, STRIPE_KEY_REGEX);
+    scrubbed = replacePattern(scrubbed, GENERIC_SK_KEY_REGEX);
+    scrubbed = replacePattern(scrubbed, PHONE_REGEX);
+    scrubbed = replacePattern(scrubbed, IPV4_REGEX);
+
+    if (looksLikeHighEntropySecret(scrubbed)) {
+      return REDACTED;
+    }
 
     return scrubbed;
   }

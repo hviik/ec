@@ -10,6 +10,7 @@ import { IOEventBuffer } from '../../src/buffer/io-event-buffer';
 import { ALSManager } from '../../src/context/als-manager';
 import { RequestTracker } from '../../src/context/request-tracker';
 import { HeaderFilter } from '../../src/pii/header-filter';
+import { Scrubber } from '../../src/pii/scrubber';
 import { BodyCapture } from '../../src/recording/body-capture';
 import { HttpServerRecorder } from '../../src/recording/http-server';
 import { ECD_INTERNAL, HttpClientRecorder } from '../../src/recording/http-client';
@@ -51,6 +52,8 @@ class MockServerResponse extends EventEmitter {
 
   public writableEnded = false;
 
+  public writableFinished = false;
+
   private readonly headers: Record<string, string> = {};
 
   public setHeader(name: string, value: string): void {
@@ -91,6 +94,7 @@ class MockServerResponse extends EventEmitter {
 
     done?.();
     this.writableEnded = true;
+    this.writableFinished = true;
     this.emit('finish');
     this.emit('close');
     return this;
@@ -132,7 +136,8 @@ class MockClientRequest extends EventEmitter {
 function createConfig() {
   return resolveConfig({
     maxPayloadSize: 1024,
-    maxConcurrentRequests: 10
+    maxConcurrentRequests: 10,
+    allowUnencrypted: true
   });
 }
 
@@ -159,15 +164,18 @@ describe('Module 08 recorders', () => {
     const tracker = new RequestTracker({ maxConcurrent: 10, ttlMs: 60000 });
     const headerFilter = new HeaderFilter(config);
     const bodyCapture = new BodyCapture(config);
+    const scrubber = new Scrubber(config);
     const recorder = new HttpServerRecorder({
       buffer,
       als,
       requestTracker: tracker,
       bodyCapture,
       headerFilter,
+      scrubber,
       config
     });
     const server = new Server();
+    const originalEmit = Server.prototype.emit;
     const req = new MockIncomingRequest();
     const res = new MockServerResponse();
     let observedRequestId: string | undefined;
@@ -176,13 +184,26 @@ describe('Module 08 recorders', () => {
     res.setHeader('content-type', 'application/json');
     res.setHeader('set-cookie', 'hidden');
     recorder.install();
+    const fallbackEmitPatchInstalled = Server.prototype.emit !== originalEmit;
 
     server.on('request', () => {
       observedRequestId = als.getRequestId();
     });
 
     try {
-      server.emit('request', req as unknown as IncomingMessage, res as unknown as ServerResponse);
+      if (fallbackEmitPatchInstalled) {
+        server.emit('request', req as unknown as IncomingMessage, res as unknown as ServerResponse);
+      } else {
+        const context = (
+          recorder as unknown as {
+            getOrCreateContext(request: IncomingMessage): RequestContext;
+          }
+        ).getOrCreateContext(req as unknown as IncomingMessage);
+
+        als.runWithContext(context, () => {
+          server.emit('request', req as unknown as IncomingMessage, res as unknown as ServerResponse);
+        });
+      }
 
       recorder.handleRequestStart({
         request: req as unknown as IncomingMessage,
@@ -197,8 +218,10 @@ describe('Module 08 recorders', () => {
       req.emit('end');
       res.write('wor');
       res.end('ld');
-
       const [slot] = buffer.drain();
+      if (slot) {
+        bodyCapture.materializeSlotBodies(slot);
+      }
 
       expect(observedRequestId).toBe(slot?.requestId ?? undefined);
       expect(slot).toMatchObject({
@@ -235,6 +258,7 @@ describe('Module 08 recorders', () => {
       requestTracker: tracker,
       bodyCapture: new BodyCapture(config),
       headerFilter: new HeaderFilter(config),
+      scrubber: new Scrubber(config),
       config
     });
     const req = new MockIncomingRequest();
@@ -249,6 +273,7 @@ describe('Module 08 recorders', () => {
       });
 
       req.emit('aborted');
+      res.emit('close');
 
       const [slot] = buffer.drain();
 
@@ -265,10 +290,11 @@ describe('Module 08 recorders', () => {
     const buffer = new IOEventBuffer({ capacity: 10, maxBytes: 100000 });
     const als = new ALSManager();
     const context = createRequestContext(als);
+    const bodyCapture = new BodyCapture(config);
     const recorder = new HttpClientRecorder({
       buffer,
       als,
-      bodyCapture: new BodyCapture(config),
+      bodyCapture,
       headerFilter: new HeaderFilter(config)
     });
     const request = new MockClientRequest();
@@ -281,8 +307,10 @@ describe('Module 08 recorders', () => {
     request.emit('response', response as unknown as IncomingMessage);
     response.emit('data', Buffer.from('ok'));
     response.emit('end');
-
     const [slot] = buffer.drain();
+    if (slot) {
+      bodyCapture.materializeSlotBodies(slot);
+    }
 
     expect(slot).toMatchObject({
       type: 'http-client',

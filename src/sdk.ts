@@ -14,6 +14,7 @@ import { RateLimiter } from './security/rate-limiter';
 import { Encryption } from './security/encryption';
 import { ProcessMetadata } from './capture/process-metadata';
 import { InspectorManager } from './capture/inspector-manager';
+import { PackageAssemblyDispatcher } from './capture/package-assembly-dispatcher';
 import { BodyCapture } from './recording/body-capture';
 import { StateTracker } from './state/state-tracker';
 import { HttpServerRecorder } from './recording/http-server';
@@ -37,6 +38,8 @@ interface ProcessListenerEntry {
 
 export class SDKInstance {
   private state: SDKState = 'created';
+
+  private fatalExitInProgress = false;
 
   private readonly timers: Array<NodeJS.Timeout | NodeJS.Timer> = [];
 
@@ -111,16 +114,18 @@ export class SDKInstance {
       return;
     }
 
+    if (!this.config.encryptionKey && !this.config.allowUnencrypted) {
+      throw new Error(
+        'ECD requires an encryptionKey unless allowUnencrypted is explicitly set to true'
+      );
+    }
+
     this.processMetadata.collectStartupMetadata();
     this.httpServerRecorder.install();
     this.channelSubscriber.subscribeAll();
     this.patchManager.installAll();
     this.registerProcessHandlers();
     this.processMetadata.startEventLoopLagMeasurement();
-
-    if (!this.config.encryptionKey) {
-      process.stderr.write('[ECD] Warning: encryption is disabled\n');
-    }
 
     this.state = 'active';
   }
@@ -179,6 +184,7 @@ export class SDKInstance {
       clearTimeout(timer as NodeJS.Timeout);
     }
 
+    await this.errorCapturer.shutdown({ timeoutMs: 5000 });
     await this.transport.flush();
     await this.transport.shutdown({ timeoutMs: 5000 });
     this.buffer.clear();
@@ -189,6 +195,7 @@ export class SDKInstance {
 
     this.processListeners.length = 0;
     this.state = 'shutdown';
+    this.fatalExitInProgress = false;
   }
 
   public enableAutoShutdown(): void {
@@ -215,7 +222,24 @@ export class SDKInstance {
     this.processListeners.length = 0;
 
     const uncaughtExceptionHandler = (error: Error) => {
+      if (this.fatalExitInProgress) {
+        return;
+      }
+
+      this.fatalExitInProgress = true;
       this.errorCapturer.capture(error, { isUncaught: true });
+      const exitNow = () => {
+        process.exit(1);
+      };
+      const exitTimer = setTimeout(exitNow, this.config.uncaughtExceptionExitDelayMs);
+      exitTimer.unref();
+
+      void this.shutdown()
+        .catch(() => undefined)
+        .finally(() => {
+          clearTimeout(exitTimer);
+          exitNow();
+        });
     };
     const unhandledRejectionHandler = (reason: unknown) => {
       const error = reason instanceof Error ? reason : new Error(String(reason));
@@ -276,7 +300,10 @@ export function createSDK(userConfig: Partial<SDKConfig> = {}): SDKInstance {
   });
   const bodyCapture = new BodyCapture({
     maxPayloadSize: config.maxPayloadSize,
-    captureBody: config.captureBody
+    captureBody: config.captureBody,
+    captureBodyDigest: config.captureBodyDigest,
+    bodyCaptureContentTypes: config.bodyCaptureContentTypes,
+    scrubber
   });
   const stateTracker = new StateTracker({ als });
   const httpServerRecorder = new HttpServerRecorder({
@@ -285,6 +312,7 @@ export function createSDK(userConfig: Partial<SDKConfig> = {}): SDKInstance {
     requestTracker,
     bodyCapture,
     headerFilter,
+    scrubber,
     config
   });
   const httpClientRecorder = new HttpClientRecorder({
@@ -310,6 +338,7 @@ export function createSDK(userConfig: Partial<SDKConfig> = {}): SDKInstance {
     netDns: netDnsRecorder
   });
   const packageBuilder = new PackageBuilder({ scrubber, config });
+  const packageAssemblyDispatcher = new PackageAssemblyDispatcher({ config });
   const transport = new TransportDispatcher({ config, encryption });
   const errorCapturer = new ErrorCapturer({
     buffer,
@@ -321,7 +350,9 @@ export function createSDK(userConfig: Partial<SDKConfig> = {}): SDKInstance {
     packageBuilder,
     transport,
     encryption,
-    config
+    bodyCapture,
+    config,
+    packageAssemblyDispatcher
   });
 
   return new SDKInstance({

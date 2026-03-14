@@ -9,13 +9,29 @@ import { RateLimiter } from '../../src/security/rate-limiter';
 import { ALSManager } from '../../src/context/als-manager';
 import { RequestTracker } from '../../src/context/request-tracker';
 import { IOEventBuffer } from '../../src/buffer/io-event-buffer';
-import { PackageBuilder } from '../../src/capture/package-builder';
+import {
+  buildPackageAssemblyResult,
+  finalizePackageAssemblyResult,
+  PackageBuilder
+} from '../../src/capture/package-builder';
+import { PackageAssemblyDispatcher } from '../../src/capture/package-assembly-dispatcher';
 import { ProcessMetadata } from '../../src/capture/process-metadata';
 import { ErrorCapturer } from '../../src/capture/error-capturer';
-import type { IOEventSlot, RequestContext } from '../../src/types';
+import type {
+  ErrorPackageParts,
+  IOEventSlot,
+  PackageAssemblyWorkerData,
+  PackageAssemblyWorkerRequest,
+  PackageAssemblyWorkerResponse,
+  RequestContext
+} from '../../src/types';
 
 const require = createRequire(import.meta.url);
 const fsModule = require('node:fs') as typeof import('node:fs');
+const noopBodyCapture = {
+  materializeSlotBodies: () => undefined,
+  materializeContextBody: () => undefined
+};
 
 function createSlot(overrides: Partial<IOEventSlot> = {}): IOEventSlot {
   return {
@@ -76,6 +92,132 @@ function createTimeoutStubs() {
     .mockImplementation(() => undefined as never);
 
   return { timers, setTimeoutSpy, clearTimeoutSpy };
+}
+
+function createPackageParts(
+  context: RequestContext | undefined,
+  overrides: Partial<ErrorPackageParts> = {}
+): ErrorPackageParts {
+  return {
+    error: {
+      type: 'Error',
+      message: 'boom',
+      stack: 'Error: boom',
+      properties: {}
+    },
+    localVariables: null,
+    requestContext:
+      context === undefined
+        ? undefined
+        : {
+            requestId: context.requestId,
+            startTime: context.startTime,
+            method: context.method,
+            url: context.url,
+            headers: { ...context.headers },
+            body: context.body,
+            bodyTruncated: context.bodyTruncated
+          },
+    ioTimeline: [],
+    stateReads: context?.stateReads ?? [],
+    concurrentRequests: [],
+    processMetadata: {
+      nodeVersion: process.version,
+      v8Version: process.versions.v8,
+      platform: process.platform,
+      arch: process.arch,
+      pid: process.pid,
+      uptime: 1,
+      memoryUsage: {
+        rss: 1,
+        heapTotal: 1,
+        heapUsed: 1,
+        external: 1,
+        arrayBuffers: 1
+      },
+      activeHandles: 1,
+      activeRequests: 1,
+      eventLoopLagMs: 0
+    },
+    codeVersion: {},
+    environment: {},
+    ioEventsDropped: 0,
+    captureFailures: [],
+    alsContextAvailable: context !== undefined,
+    stateTrackingEnabled: context !== undefined,
+    usedAmbientEvents: context === undefined,
+    ...overrides
+  };
+}
+
+async function flushMicrotasks(turns = 3): Promise<void> {
+  for (let index = 0; index < turns; index += 1) {
+    await Promise.resolve();
+  }
+}
+
+class FakeWorker {
+  private readonly messageListeners: Array<(message: PackageAssemblyWorkerResponse) => void> = [];
+
+  private readonly errorListeners: Array<(error: Error) => void> = [];
+
+  private readonly exitListeners: Array<(code: number) => void> = [];
+
+  public constructor(
+    private readonly handler: (
+      message: PackageAssemblyWorkerRequest,
+      workerData: PackageAssemblyWorkerData
+    ) => PackageAssemblyWorkerResponse
+  ,
+    private readonly workerData: PackageAssemblyWorkerData
+  ) {}
+
+  public postMessage(message: PackageAssemblyWorkerRequest): void {
+    queueMicrotask(() => {
+      try {
+        const response = this.handler(message, this.workerData);
+        for (const listener of this.messageListeners) {
+          listener(response);
+        }
+
+        if (message.type === 'shutdown') {
+          for (const listener of this.exitListeners) {
+            listener(0);
+          }
+        }
+      } catch (error) {
+        const workerError = error instanceof Error ? error : new Error(String(error));
+        for (const listener of this.errorListeners) {
+          listener(workerError);
+        }
+      }
+    });
+  }
+
+  public on(
+    event: 'message' | 'error' | 'exit',
+    listener: ((message: PackageAssemblyWorkerResponse) => void) |
+      ((error: Error) => void) |
+      ((code: number) => void)
+  ): this {
+    if (event === 'message') {
+      this.messageListeners.push(listener as (message: PackageAssemblyWorkerResponse) => void);
+    } else if (event === 'error') {
+      this.errorListeners.push(listener as (error: Error) => void);
+    } else {
+      this.exitListeners.push(listener as (code: number) => void);
+    }
+
+    return this;
+  }
+
+  public async terminate(): Promise<number> {
+    for (const listener of this.exitListeners) {
+      listener(0);
+    }
+
+    return 0;
+  }
 }
 
 describe('ProcessMetadata', () => {
@@ -167,6 +309,7 @@ describe('PackageBuilder', () => {
     const als = new ALSManager();
     const context = createContext(als, 'req-1');
 
+    context.url = '/login?email=user@example.com&token=secret-token';
     context.body = Buffer.from('email=user@example.com');
     context.bodyTruncated = true;
     context.stateReads.push({
@@ -196,6 +339,7 @@ describe('PackageBuilder', () => {
       requestContext: context,
       ioTimeline: [
         createSlot({
+          url: '/resource?apiKey=sk-secret',
           requestBody: Buffer.from('jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig'),
           responseBodyTruncated: true
         })
@@ -246,6 +390,8 @@ describe('PackageBuilder', () => {
       data: expect.any(String),
       length: Buffer.from('email=user@example.com').length
     });
+    expect(pkg.request?.url).toBe('/login?email=%5BREDACTED%5D&token=%5BREDACTED%5D');
+    expect(pkg.ioTimeline[0]?.url).toBe('/resource?apiKey=%5BREDACTED%5D');
     expect(pkg.completeness).toMatchObject({
       requestCaptured: true,
       requestBodyTruncated: true,
@@ -328,6 +474,88 @@ describe('PackageBuilder', () => {
     expect(pkg.ioTimeline).toEqual([]);
     expect(pkg.stateReads).toEqual([]);
   });
+
+  it('produces the same package and payload shape through the shared assembly helper', () => {
+    const config = resolveConfig({});
+    const builder = new PackageBuilder({
+      scrubber: new Scrubber(config),
+      config
+    });
+    const als = new ALSManager();
+    const context = createContext(als, 'req-assembly');
+
+    context.body = Buffer.from('hello');
+    const parts = createPackageParts(context, {
+      ioTimeline: [createSlot({ requestBody: Buffer.from('body') })]
+    });
+
+    const inlineResult = finalizePackageAssemblyResult({
+      packageObject: builder.build(parts),
+      config
+    });
+    const sharedResult = buildPackageAssemblyResult({
+      parts,
+      config
+    });
+
+    expect(sharedResult.packageObject).toMatchObject({
+      ...inlineResult.packageObject,
+      capturedAt: expect.any(String),
+      request: inlineResult.packageObject.request
+        ? {
+            ...inlineResult.packageObject.request,
+            receivedAt: expect.any(String)
+          }
+        : undefined
+    });
+    expect(JSON.parse(sharedResult.payload)).toMatchObject({
+      ...JSON.parse(inlineResult.payload),
+      capturedAt: expect.any(String),
+      request: inlineResult.packageObject.request
+        ? {
+            ...JSON.parse(inlineResult.payload).request,
+            receivedAt: expect.any(String)
+          }
+        : undefined
+    });
+  });
+
+  it('assembles packages through the dispatcher worker contract and shuts down cleanly', async () => {
+    const config = resolveConfig({});
+    const dispatcher = new PackageAssemblyDispatcher({
+      config,
+      workerFactory: {
+        create: (_filename, workerData) =>
+          new FakeWorker((message, data) => {
+            if (message.type === 'shutdown') {
+              return { id: message.id };
+            }
+
+            return {
+              id: message.id,
+              result: buildPackageAssemblyResult({
+                parts: message.parts,
+                config: data.config
+              })
+            };
+          }, workerData)
+      }
+    });
+    const als = new ALSManager();
+    const context = createContext(als, 'req-dispatch');
+    const parts = createPackageParts(context, {
+      ioTimeline: [createSlot({ requestBody: Buffer.from('dispatch') })]
+    });
+
+    const result = await dispatcher.assemble(parts);
+
+    expect(result.packageObject.request?.id).toBe('req-dispatch');
+    expect(JSON.parse(result.payload)).toMatchObject({
+      schemaVersion: '1.0.0'
+    });
+
+    await dispatcher.shutdown();
+  });
 });
 
 describe('ErrorCapturer', () => {
@@ -336,7 +564,7 @@ describe('ErrorCapturer', () => {
   });
 
   it('captures a full package with context, locals, io events, encryption, and transport handoff', () => {
-    const config = resolveConfig({});
+    const config = resolveConfig({ encryptionKey: 'capture-secret' });
     const buffer = new IOEventBuffer({ capacity: 20, maxBytes: 1_000_000 });
     const als = new ALSManager();
     const context = createContext(als, 'req-err');
@@ -371,6 +599,7 @@ describe('ErrorCapturer', () => {
       packageBuilder,
       transport,
       encryption,
+      bodyCapture: noopBodyCapture,
       config
     });
 
@@ -406,6 +635,7 @@ describe('ErrorCapturer', () => {
 
     expect(pkg).not.toBeNull();
     expect(pkg?.completeness.encrypted).toBe(true);
+    expect(pkg?.integrity?.algorithm).toBe('HMAC-SHA256');
     expect(pkg?.request?.id).toBe('req-err');
     expect(pkg?.ioTimeline).toHaveLength(1);
     expect(pkg?.localVariables?.[0]?.locals.password).toBe('[REDACTED]');
@@ -417,6 +647,161 @@ describe('ErrorCapturer', () => {
         encrypted: true
       }
     });
+
+    tracker.shutdown();
+    processMetadata.shutdown();
+  });
+
+  it('uses the package assembly dispatcher when available', async () => {
+    const config = resolveConfig({});
+    const buffer = new IOEventBuffer({ capacity: 20, maxBytes: 1_000_000 });
+    const als = new ALSManager();
+    const context = createContext(als, 'req-worker');
+    const tracker = new RequestTracker({ maxConcurrent: 10, ttlMs: 60_000 });
+    const processMetadata = new ProcessMetadata(config);
+    const transport = {
+      send: vi.fn()
+    };
+    const packageBuilder = new PackageBuilder({
+      scrubber: new Scrubber(config),
+      config
+    });
+    const dispatcher = {
+      isAvailable: vi.fn(() => true),
+      assemble: vi.fn(async (parts: ErrorPackageParts) =>
+        buildPackageAssemblyResult({ parts, config })
+      ),
+      shutdown: vi.fn(async () => undefined)
+    };
+    const capturer = new ErrorCapturer({
+      buffer,
+      als,
+      inspector: { getLocals: vi.fn(() => null) } as never,
+      rateLimiter: new RateLimiter({ maxCaptures: 5, windowMs: 60_000 }),
+      requestTracker: tracker,
+      processMetadata,
+      packageBuilder,
+      transport,
+      encryption: null,
+      bodyCapture: noopBodyCapture,
+      config,
+      packageAssemblyDispatcher: dispatcher
+    });
+
+    tracker.add(context);
+    buffer.push(createSlot({ requestId: 'req-worker' }));
+
+    const result = als.runWithContext(context, () => capturer.capture(new Error('worker')));
+
+    expect(result).toBeNull();
+    await flushMicrotasks();
+    expect(dispatcher.assemble).toHaveBeenCalledTimes(1);
+    expect(transport.send).toHaveBeenCalledTimes(1);
+
+    tracker.shutdown();
+    processMetadata.shutdown();
+  });
+
+  it('falls back to inline package assembly when the worker path fails', async () => {
+    const config = resolveConfig({});
+    const buffer = new IOEventBuffer({ capacity: 20, maxBytes: 1_000_000 });
+    const als = new ALSManager();
+    const context = createContext(als, 'req-fallback');
+    const tracker = new RequestTracker({ maxConcurrent: 10, ttlMs: 60_000 });
+    const processMetadata = new ProcessMetadata(config);
+    const transport = {
+      send: vi.fn()
+    };
+    const packageBuilder = new PackageBuilder({
+      scrubber: new Scrubber(config),
+      config
+    });
+    const dispatcher = {
+      isAvailable: vi.fn(() => true),
+      assemble: vi.fn(async () => {
+        throw new Error('worker boom');
+      }),
+      shutdown: vi.fn(async () => undefined)
+    };
+    const capturer = new ErrorCapturer({
+      buffer,
+      als,
+      inspector: { getLocals: vi.fn(() => null) } as never,
+      rateLimiter: new RateLimiter({ maxCaptures: 5, windowMs: 60_000 }),
+      requestTracker: tracker,
+      processMetadata,
+      packageBuilder,
+      transport,
+      encryption: null,
+      bodyCapture: noopBodyCapture,
+      config,
+      packageAssemblyDispatcher: dispatcher
+    });
+
+    tracker.add(context);
+    buffer.push(createSlot({ requestId: 'req-fallback' }));
+
+    const result = als.runWithContext(context, () => capturer.capture(new Error('fallback')));
+
+    expect(result).toBeNull();
+    await flushMicrotasks();
+    expect(transport.send).toHaveBeenCalledTimes(1);
+
+    const payload = transport.send.mock.calls[0]?.[0] as string;
+    expect(JSON.parse(payload)).toMatchObject({
+      completeness: {
+        captureFailures: ['package-worker: worker boom']
+      }
+    });
+
+    tracker.shutdown();
+    processMetadata.shutdown();
+  });
+
+  it('keeps inline assembly when a custom scrubber is configured', () => {
+    const config = resolveConfig({
+      piiScrubber: (_key, value) => value
+    });
+    const buffer = new IOEventBuffer({ capacity: 20, maxBytes: 1_000_000 });
+    const als = new ALSManager();
+    const context = createContext(als, 'req-inline');
+    const tracker = new RequestTracker({ maxConcurrent: 10, ttlMs: 60_000 });
+    const processMetadata = new ProcessMetadata(config);
+    const transport = {
+      send: vi.fn()
+    };
+    const packageBuilder = new PackageBuilder({
+      scrubber: new Scrubber(config),
+      config
+    });
+    const dispatcher = {
+      isAvailable: vi.fn(() => true),
+      assemble: vi.fn(),
+      shutdown: vi.fn(async () => undefined)
+    };
+    const capturer = new ErrorCapturer({
+      buffer,
+      als,
+      inspector: { getLocals: vi.fn(() => null) } as never,
+      rateLimiter: new RateLimiter({ maxCaptures: 5, windowMs: 60_000 }),
+      requestTracker: tracker,
+      processMetadata,
+      packageBuilder,
+      transport,
+      encryption: null,
+      bodyCapture: noopBodyCapture,
+      config,
+      packageAssemblyDispatcher: dispatcher
+    });
+
+    tracker.add(context);
+    buffer.push(createSlot({ requestId: 'req-inline' }));
+
+    const result = als.runWithContext(context, () => capturer.capture(new Error('inline')));
+
+    expect(result).not.toBeNull();
+    expect(dispatcher.assemble).not.toHaveBeenCalled();
+    expect(transport.send).toHaveBeenCalledTimes(1);
 
     tracker.shutdown();
     processMetadata.shutdown();
@@ -445,6 +830,7 @@ describe('ErrorCapturer', () => {
       packageBuilder,
       transport,
       encryption: null,
+      bodyCapture: noopBodyCapture,
       config
     });
 
@@ -479,6 +865,7 @@ describe('ErrorCapturer', () => {
       }),
       transport: { send: vi.fn() },
       encryption: null,
+      bodyCapture: noopBodyCapture,
       config
     });
 
@@ -510,6 +897,7 @@ describe('ErrorCapturer', () => {
       }),
       transport: { send: vi.fn() },
       encryption: null,
+      bodyCapture: noopBodyCapture,
       config
     });
 

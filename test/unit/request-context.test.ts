@@ -145,6 +145,45 @@ describe('ALSManager', () => {
       'x-request-id': 'req-1'
     });
   });
+
+  it('reuses released contexts only after a deferred flush and resets their state', async () => {
+    const manager = new ALSManager();
+    const first = manager.createRequestContext({
+      method: 'POST',
+      url: '/first',
+      headers: { host: 'localhost' }
+    });
+
+    first.body = Buffer.from('body');
+    first.bodyTruncated = true;
+    first.ioEvents.push({ requestId: 'req-1' } as never);
+    first.stateReads.push({
+      container: 'cache',
+      operation: 'get',
+      key: 'user',
+      value: 1,
+      timestamp: 1n
+    });
+    manager.releaseRequestContext(first);
+
+    await Promise.resolve();
+
+    const second = manager.createRequestContext({
+      method: 'GET',
+      url: '/second',
+      headers: { host: 'service.local' }
+    });
+
+    expect(second).toBe(first);
+    expect(second.requestId).toMatch(new RegExp(`^${process.pid}-\\d+$`));
+    expect(second.method).toBe('GET');
+    expect(second.url).toBe('/second');
+    expect(second.headers).toEqual({ host: 'service.local' });
+    expect(second.body).toBeNull();
+    expect(second.bodyTruncated).toBe(false);
+    expect(second.ioEvents).toEqual([]);
+    expect(second.stateReads).toEqual([]);
+  });
 });
 
 describe('RequestTracker', () => {

@@ -5,45 +5,26 @@
  *               encryption.ts, rate-limiter.ts, als-manager.ts, request-tracker.ts, inspector-manager.ts
  */
 
+import { createHmac } from 'node:crypto';
+
 import { cloneAndLimit, STANDARD_LIMITS } from '../serialization/clone-and-limit';
 import { Scrubber } from '../pii/scrubber';
+import { Encryption } from '../security/encryption';
 import type {
   CapturedFrame,
   Completeness,
   ErrorInfo,
   ErrorPackage,
+  ErrorPackageParts,
   IOEventSlot,
   IOEventSerialized,
+  PackageAssemblyResult,
   ProcessMetadata,
-  RequestContext,
   RequestSummary,
   ResolvedConfig,
   StateRead,
   StateReadSerialized
 } from '../types';
-
-export interface ErrorPackageParts {
-  error: {
-    type: string;
-    message: string;
-    stack: string;
-    cause?: ErrorInfo;
-    properties: Record<string, unknown>;
-  };
-  localVariables: CapturedFrame[] | null;
-  requestContext?: RequestContext;
-  ioTimeline: IOEventSlot[];
-  stateReads: StateRead[];
-  concurrentRequests: RequestSummary[];
-  processMetadata: ProcessMetadata;
-  codeVersion: { gitSha?: string; packageVersion?: string };
-  environment: Record<string, string>;
-  ioEventsDropped: number;
-  captureFailures: string[];
-  alsContextAvailable: boolean;
-  stateTrackingEnabled: boolean;
-  usedAmbientEvents: boolean;
-}
 
 function cloneBufferBody(body: Buffer | null): unknown | null {
   return body === null ? null : cloneAndLimit(body, STANDARD_LIMITS);
@@ -55,14 +36,14 @@ function approximateIsoFromHrtime(startTime: bigint): string {
   return new Date(Date.now() - elapsedMs).toISOString();
 }
 
-function serializeIOEvent(event: IOEventSlot): IOEventSerialized {
+function serializeIOEvent(event: IOEventSlot, scrubber: Scrubber): IOEventSerialized {
   return {
     seq: event.seq,
     type: event.type,
     direction: event.direction,
     target: event.target,
     method: event.method,
-    url: event.url,
+    url: event.url === null ? null : scrubber.scrubUrl(event.url),
     statusCode: event.statusCode,
     fd: event.fd,
     requestId: event.requestId,
@@ -74,6 +55,8 @@ function serializeIOEvent(event: IOEventSlot): IOEventSerialized {
     responseHeaders: event.responseHeaders === null ? null : { ...event.responseHeaders },
     requestBody: cloneBufferBody(event.requestBody),
     responseBody: cloneBufferBody(event.responseBody),
+    requestBodyDigest: event.requestBodyDigest ?? null,
+    responseBodyDigest: event.responseBodyDigest ?? null,
     requestBodyTruncated: event.requestBodyTruncated,
     responseBodyTruncated: event.responseBodyTruncated,
     requestBodyOriginalSize: event.requestBodyOriginalSize,
@@ -110,6 +93,62 @@ function estimateBodySize(body: unknown): number {
   return JSON.stringify(body).length;
 }
 
+function signPackage(
+  pkg: ErrorPackage,
+  encryptionKey: string | undefined
+): string | null {
+  if (!encryptionKey) {
+    return null;
+  }
+
+  return createHmac('sha256', encryptionKey)
+    .update(JSON.stringify(pkg))
+    .digest('base64');
+}
+
+export function finalizePackageAssemblyResult(input: {
+  packageObject: ErrorPackage;
+  config: ResolvedConfig;
+}): PackageAssemblyResult {
+  const { packageObject, config } = input;
+  const integritySignature = signPackage(packageObject, config.encryptionKey);
+
+  if (integritySignature !== null) {
+    packageObject.integrity = {
+      algorithm: 'HMAC-SHA256',
+      signature: integritySignature
+    };
+  }
+
+  packageObject.completeness.encrypted = config.encryptionKey !== undefined;
+
+  const payload =
+    config.encryptionKey === undefined
+      ? JSON.stringify(packageObject)
+      : JSON.stringify(new Encryption(config.encryptionKey).encrypt(JSON.stringify(packageObject)));
+
+  return {
+    packageObject,
+    payload
+  };
+}
+
+export function buildPackageAssemblyResult(input: {
+  parts: ErrorPackageParts;
+  config: ResolvedConfig;
+}): PackageAssemblyResult {
+  const scrubber = new Scrubber(input.config);
+  const builder = new PackageBuilder({
+    scrubber,
+    config: input.config
+  });
+
+  return finalizePackageAssemblyResult({
+    packageObject: builder.build(input.parts),
+    config: input.config
+  });
+}
+
 export class PackageBuilder {
   private readonly scrubber: Scrubber;
 
@@ -121,7 +160,9 @@ export class PackageBuilder {
   }
 
   public build(parts: ErrorPackageParts): ErrorPackage {
-    const serializedTimeline = parts.ioTimeline.map((event) => serializeIOEvent(event));
+    const serializedTimeline = parts.ioTimeline.map((event) =>
+      serializeIOEvent(event, this.scrubber)
+    );
     const serializedStateReads = parts.stateReads.map((read) =>
       serializeStateRead(read)
     );
@@ -139,7 +180,7 @@ export class PackageBuilder {
           : {
               id: parts.requestContext.requestId,
               method: parts.requestContext.method,
-              url: parts.requestContext.url,
+              url: this.scrubber.scrubUrl(parts.requestContext.url),
               headers: { ...parts.requestContext.headers },
               body:
                 parts.requestContext.body === null

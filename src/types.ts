@@ -36,6 +36,8 @@ export interface IOEventSlot {
   responseHeaders: Record<string, string> | null;
   requestBody: Buffer | null;
   responseBody: Buffer | null;
+  requestBodyDigest?: string | null;
+  responseBodyDigest?: string | null;
   requestBodyTruncated: boolean;
   responseBodyTruncated: boolean;
   requestBodyOriginalSize: number | null;
@@ -104,6 +106,16 @@ export interface ErrorInfo {
   properties: Record<string, unknown>;
 }
 
+export interface ErrorPackageRequestContextData {
+  requestId: string;
+  startTime: bigint;
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body: Buffer | null;
+  bodyTruncated: boolean;
+}
+
 export interface IOEventSerialized {
   seq: number;
   type: IOEventSlot['type'];
@@ -122,6 +134,8 @@ export interface IOEventSerialized {
   responseHeaders: Record<string, string> | null;
   requestBody: unknown | null;
   responseBody: unknown | null;
+  requestBodyDigest?: string | null;
+  responseBodyDigest?: string | null;
   requestBodyTruncated: boolean;
   responseBodyTruncated: boolean;
   requestBodyOriginalSize: number | null;
@@ -196,7 +210,39 @@ export interface ErrorPackage {
   processMetadata: ProcessMetadata;
   codeVersion: { gitSha?: string; packageVersion?: string };
   environment: Record<string, string>;
+  integrity?: {
+    algorithm: 'HMAC-SHA256';
+    signature: string;
+  };
   completeness: Completeness;
+}
+
+export interface ErrorPackageParts {
+  error: {
+    type: string;
+    message: string;
+    stack: string;
+    cause?: ErrorInfo;
+    properties: Record<string, unknown>;
+  };
+  localVariables: CapturedFrame[] | null;
+  requestContext?: ErrorPackageRequestContextData;
+  ioTimeline: IOEventSlot[];
+  stateReads: StateRead[];
+  concurrentRequests: RequestSummary[];
+  processMetadata: ProcessMetadata;
+  codeVersion: { gitSha?: string; packageVersion?: string };
+  environment: Record<string, string>;
+  ioEventsDropped: number;
+  captureFailures: string[];
+  alsContextAvailable: boolean;
+  stateTrackingEnabled: boolean;
+  usedAmbientEvents: boolean;
+}
+
+export interface PackageAssemblyResult {
+  packageObject: ErrorPackage;
+  payload: string;
 }
 
 export interface SerializationLimits {
@@ -230,16 +276,20 @@ export interface SDKConfig {
   envAllowlist?: string[];
   envBlocklist?: RegExp[];
   encryptionKey?: string;
+  allowUnencrypted?: boolean;
   transport?: TransportConfig;
   captureLocalVariables?: boolean;
   captureDbBindParams?: boolean;
   captureBody?: boolean;
+  captureBodyDigest?: boolean;
+  bodyCaptureContentTypes?: string[];
   piiScrubber?: (key: string, value: unknown) => unknown;
   replaceDefaultScrubber?: boolean;
   serialization?: Partial<SerializationLimits>;
   maxLocalsCollectionsPerSecond?: number;
   maxCachedLocals?: number;
   maxLocalsFrames?: number;
+  uncaughtExceptionExitDelayMs?: number;
   allowInsecureTransport?: boolean;
 }
 
@@ -254,15 +304,50 @@ export interface ResolvedConfig {
   envAllowlist: string[];
   envBlocklist: RegExp[];
   encryptionKey: string | undefined;
+  allowUnencrypted: boolean;
   transport: TransportConfig;
   captureLocalVariables: boolean;
   captureDbBindParams: boolean;
   captureBody: boolean;
+  captureBodyDigest: boolean;
+  bodyCaptureContentTypes: string[];
   piiScrubber: ((key: string, value: unknown) => unknown) | undefined;
   replaceDefaultScrubber: boolean;
   serialization: SerializationLimits;
   maxLocalsCollectionsPerSecond: number;
   maxCachedLocals: number;
   maxLocalsFrames: number;
+  uncaughtExceptionExitDelayMs: number;
   allowInsecureTransport: boolean;
 }
+
+export interface PackageAssemblyWorkerConfig extends Omit<ResolvedConfig, 'piiScrubber'> {
+  piiScrubber: undefined;
+}
+
+export interface PackageAssemblyWorkerData {
+  config: PackageAssemblyWorkerConfig;
+}
+
+export type PackageAssemblyWorkerRequest =
+  | {
+      id: number;
+      type: 'assemble';
+      parts: ErrorPackageParts;
+    }
+  | {
+      id: number;
+      type: 'shutdown';
+    };
+
+export type PackageAssemblyWorkerResponse =
+  | {
+      id: number;
+      result?: PackageAssemblyResult;
+      error?: undefined;
+    }
+  | {
+      id: number;
+      error: string;
+      result?: undefined;
+    };

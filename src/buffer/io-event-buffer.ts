@@ -44,6 +44,8 @@ export class IOEventBuffer {
 
   private writeHead = 0;
 
+  private readHead = 0;
+
   private slotCount = 0;
 
   private payloadBytes = 0;
@@ -51,6 +53,8 @@ export class IOEventBuffer {
   private overflowCount = 0;
 
   private nextSeq = 1;
+
+  private readonly slotPool: IOEventSlot[] = [];
 
   public constructor(options: IOEventBufferOptions) {
     this.capacity = options.capacity;
@@ -65,36 +69,15 @@ export class IOEventBuffer {
     const overwrittenSlot = this.slots[index];
 
     if (overwrittenSlot !== null) {
-      this.payloadBytes -= overwrittenSlot.estimatedBytes;
-      this.overflowCount += 1;
-      this.slots[index] = null;
-      this.slotCount -= 1;
+      this.evictIndex(index);
     }
 
     while (this.payloadBytes + estimatedBytes > this.maxBytes && this.slotCount > 0) {
-      const oldestIndex = this.findOldestLiveIndex();
-
-      if (oldestIndex === null) {
-        break;
-      }
-
-      const oldestSlot = this.slots[oldestIndex];
-
-      if (oldestSlot === null) {
-        break;
-      }
-
-      this.slots[oldestIndex] = null;
-      this.payloadBytes -= oldestSlot.estimatedBytes;
-      this.slotCount -= 1;
-      this.overflowCount += 1;
+      this.evictOldest();
     }
 
-    const slot: IOEventSlot = {
-      ...event,
-      seq,
-      estimatedBytes
-    };
+    const slot = this.claimSlot();
+    this.assignSlot(slot, event, seq, estimatedBytes);
 
     this.slots[index] = slot;
     this.payloadBytes += estimatedBytes;
@@ -119,9 +102,8 @@ export class IOEventBuffer {
     }
 
     const recent: IOEventSlot[] = [];
-    const start = Math.max(this.writeHead - this.capacity, 0);
 
-    for (let cursor = this.writeHead - 1; cursor >= start; cursor -= 1) {
+    for (let cursor = this.writeHead - 1; cursor >= this.readHead; cursor -= 1) {
       const slot = this.slots[cursor % this.capacity];
 
       if (slot !== null) {
@@ -141,9 +123,19 @@ export class IOEventBuffer {
   }
 
   public clear(): void {
-    this.slots.fill(null);
+    for (let cursor = this.readHead; cursor < this.writeHead; cursor += 1) {
+      const index = cursor % this.capacity;
+      const slot = this.slots[index];
+
+      if (slot !== null) {
+        this.recycleSlot(slot);
+        this.slots[index] = null;
+      }
+    }
+
     this.payloadBytes = 0;
     this.slotCount = 0;
+    this.readHead = this.writeHead;
   }
 
   public getOverflowCount(): number {
@@ -162,9 +154,8 @@ export class IOEventBuffer {
 
   private collectChronological(): IOEventSlot[] {
     const liveSlots: IOEventSlot[] = [];
-    const start = Math.max(this.writeHead - this.capacity, 0);
 
-    for (let cursor = start; cursor < this.writeHead; cursor += 1) {
+    for (let cursor = this.readHead; cursor < this.writeHead; cursor += 1) {
       const slot = this.slots[cursor % this.capacity];
 
       if (slot !== null) {
@@ -175,17 +166,88 @@ export class IOEventBuffer {
     return liveSlots;
   }
 
-  private findOldestLiveIndex(): number | null {
-    const start = Math.max(this.writeHead - this.capacity, 0);
+  private evictOldest(): void {
+    const index = this.readHead % this.capacity;
+    this.evictIndex(index);
+  }
 
-    for (let cursor = start; cursor < this.writeHead; cursor += 1) {
-      const index = cursor % this.capacity;
-
-      if (this.slots[index] !== null) {
-        return index;
-      }
+  private evictIndex(index: number): void {
+    const slot = this.slots[index];
+    if (slot === null) {
+      return;
     }
 
-    return null;
+    this.slots[index] = null;
+    this.payloadBytes -= slot.estimatedBytes;
+    this.slotCount -= 1;
+    this.overflowCount += 1;
+    this.recycleSlot(slot);
+
+    if (this.slotCount === 0) {
+      this.readHead = this.writeHead;
+      return;
+    }
+
+    if (index === this.readHead % this.capacity) {
+      this.readHead += 1;
+    }
+  }
+
+  private claimSlot(): IOEventSlot {
+    return this.slotPool.pop() ?? ({} as IOEventSlot);
+  }
+
+  private recycleSlot(slot: IOEventSlot): void {
+    slot.requestBody?.fill(0);
+    slot.responseBody?.fill(0);
+    const symbolSlot = slot as unknown as Record<symbol, unknown>;
+    for (const symbolKey of Object.getOwnPropertySymbols(slot)) {
+      delete symbolSlot[symbolKey];
+    }
+    slot.requestBody = null;
+    slot.responseBody = null;
+    slot.requestBodyDigest = null;
+    slot.responseBodyDigest = null;
+    slot.requestHeaders = null;
+    slot.responseHeaders = null;
+    slot.error = null;
+    slot.dbMeta = undefined;
+    this.slotPool.push(slot);
+  }
+
+  private assignSlot(
+    slot: IOEventSlot,
+    event: PushableIOEvent,
+    seq: number,
+    estimatedBytes: number
+  ): void {
+    slot.seq = seq;
+    slot.phase = event.phase;
+    slot.startTime = event.startTime;
+    slot.endTime = event.endTime;
+    slot.durationMs = event.durationMs;
+    slot.type = event.type;
+    slot.direction = event.direction;
+    slot.requestId = event.requestId;
+    slot.contextLost = event.contextLost;
+    slot.target = event.target;
+    slot.method = event.method;
+    slot.url = event.url;
+    slot.statusCode = event.statusCode;
+    slot.fd = event.fd;
+    slot.requestHeaders = event.requestHeaders;
+    slot.responseHeaders = event.responseHeaders;
+    slot.requestBody = event.requestBody;
+    slot.responseBody = event.responseBody;
+    slot.requestBodyDigest = event.requestBodyDigest ?? null;
+    slot.responseBodyDigest = event.responseBodyDigest ?? null;
+    slot.requestBodyTruncated = event.requestBodyTruncated;
+    slot.responseBodyTruncated = event.responseBodyTruncated;
+    slot.requestBodyOriginalSize = event.requestBodyOriginalSize;
+    slot.responseBodyOriginalSize = event.responseBodyOriginalSize;
+    slot.error = event.error;
+    slot.aborted = event.aborted;
+    slot.dbMeta = event.dbMeta;
+    slot.estimatedBytes = estimatedBytes;
   }
 }

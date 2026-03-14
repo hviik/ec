@@ -42,6 +42,14 @@ const DEFAULT_ENV_ALLOWLIST = [
 
 const DEFAULT_ENV_BLOCKLIST = [/key|secret|token|password|credential|auth|private/i];
 
+const DEFAULT_BODY_CAPTURE_CONTENT_TYPES = [
+  'application/json',
+  'application/x-www-form-urlencoded',
+  'text/plain',
+  'application/xml',
+  'multipart/form-data'
+];
+
 function assertPositiveInteger(
   value: number,
   fieldName: string,
@@ -92,6 +100,8 @@ export function resolveConfig(userConfig: Partial<SDKConfig> = {}): ResolvedConf
     userConfig.maxLocalsCollectionsPerSecond ?? 20;
   const maxCachedLocals = userConfig.maxCachedLocals ?? 50;
   const maxLocalsFrames = userConfig.maxLocalsFrames ?? 5;
+  const uncaughtExceptionExitDelayMs =
+    userConfig.uncaughtExceptionExitDelayMs ?? 500;
 
   assertPositiveInteger(bufferSize, 'bufferSize', (candidate) => {
     if (candidate < 10 || candidate > 100000) {
@@ -129,6 +139,10 @@ export function resolveConfig(userConfig: Partial<SDKConfig> = {}): ResolvedConf
   );
   assertPositiveInteger(maxCachedLocals, 'maxCachedLocals');
   assertPositiveInteger(maxLocalsFrames, 'maxLocalsFrames');
+  assertPositiveInteger(
+    uncaughtExceptionExitDelayMs,
+    'uncaughtExceptionExitDelayMs'
+  );
 
   if (transport.type === 'http') {
     throw new Error(
@@ -147,16 +161,22 @@ export function resolveConfig(userConfig: Partial<SDKConfig> = {}): ResolvedConf
     envAllowlist: [...(userConfig.envAllowlist ?? DEFAULT_ENV_ALLOWLIST)],
     envBlocklist: [...(userConfig.envBlocklist ?? DEFAULT_ENV_BLOCKLIST)],
     encryptionKey: userConfig.encryptionKey,
+    allowUnencrypted: userConfig.allowUnencrypted ?? false,
     transport,
-    captureLocalVariables: userConfig.captureLocalVariables ?? true,
+    captureLocalVariables: userConfig.captureLocalVariables ?? false,
     captureDbBindParams: userConfig.captureDbBindParams ?? false,
     captureBody: userConfig.captureBody ?? true,
+    captureBodyDigest: userConfig.captureBodyDigest ?? false,
+    bodyCaptureContentTypes: [
+      ...(userConfig.bodyCaptureContentTypes ?? DEFAULT_BODY_CAPTURE_CONTENT_TYPES)
+    ],
     piiScrubber: userConfig.piiScrubber,
     replaceDefaultScrubber: userConfig.replaceDefaultScrubber ?? false,
     serialization: resolveSerializationLimits(userConfig),
     maxLocalsCollectionsPerSecond,
     maxCachedLocals,
     maxLocalsFrames,
+    uncaughtExceptionExitDelayMs,
     allowInsecureTransport: userConfig.allowInsecureTransport ?? false
   };
 }
