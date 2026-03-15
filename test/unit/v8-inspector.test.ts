@@ -152,27 +152,24 @@ describe('InspectorManager', () => {
       const manager = new InspectorManager(createInspectorConfig());
 
       expect(manager.isAvailable()).toBe(true);
+      expect(inspector.session.connect).toHaveBeenCalledTimes(0);
+      expect(timers.timers).toHaveLength(0);
+
+      manager.ensureDebuggerActive();
+
       expect(inspector.session.connect).toHaveBeenCalledTimes(1);
       expect(inspector.session.post).toHaveBeenCalledWith(
         'Debugger.enable',
         expect.any(Function)
       );
-      expect(
-        inspector.session.post.mock.calls.some(
-          (call) => call[0] === 'Debugger.setPauseOnExceptions' && call[1]?.state === 'all'
-        )
-      ).toBe(false);
-      expect(timers.timers).toHaveLength(2);
-      expect(timers.timers[0]?.unref).toHaveBeenCalledTimes(1);
-      expect(timers.timers[1]?.unref).toHaveBeenCalledTimes(1);
-
-      manager.ensureDebuggerActive();
-
       expect(inspector.session.post).toHaveBeenCalledWith(
         'Debugger.setPauseOnExceptions',
         { state: 'all' },
         expect.any(Function)
       );
+      expect(timers.timers).toHaveLength(2);
+      expect(timers.timers[0]?.unref).toHaveBeenCalledTimes(1);
+      expect(timers.timers[1]?.unref).toHaveBeenCalledTimes(1);
       expect(timeoutTimers.timers).toHaveLength(1);
       expect(timeoutTimers.timers[0]?.unref).toHaveBeenCalledTimes(1);
       manager.shutdown();
@@ -200,11 +197,14 @@ describe('InspectorManager', () => {
   });
 
   it('resumes immediately for non-exception pauses', () => {
+    createTimerStubs();
+    createTimeoutStubs();
     const inspector = createInspectorMock();
 
     withInspectorMock(inspector.inspectorModule, () => {
       const manager = new InspectorManager(createInspectorConfig());
 
+      manager.ensureDebuggerActive();
       inspector.emitPaused({
         reason: 'other',
         callFrames: []
@@ -221,11 +221,14 @@ describe('InspectorManager', () => {
   });
 
   it('resumes without collecting when all frames are library code', () => {
+    createTimerStubs();
+    createTimeoutStubs();
     const inspector = createInspectorMock();
 
     withInspectorMock(inspector.inspectorModule, () => {
       const manager = new InspectorManager(createInspectorConfig());
 
+      manager.ensureDebuggerActive();
       inspector.emitPaused({
         reason: 'exception',
         data: { className: 'Error', description: 'boom' },
@@ -248,6 +251,8 @@ describe('InspectorManager', () => {
   });
 
   it('collects app-frame locals and caches them one-shot', () => {
+    createTimerStubs();
+    createTimeoutStubs();
     const inspector = createInspectorMock({
       postHandlers: {
         'Runtime.getProperties': () => ({
@@ -266,6 +271,7 @@ describe('InspectorManager', () => {
     withInspectorMock(inspector.inspectorModule, () => {
       const manager = new InspectorManager(createInspectorConfig());
 
+      manager.ensureDebuggerActive();
       inspector.emitPaused({
         reason: 'exception',
         data: { className: 'Error', description: 'boom' },
@@ -451,13 +457,17 @@ describe('InspectorManager', () => {
 
   it('drops expired cache entries on sweep', () => {
     const timers = createTimerStubs();
+    createTimeoutStubs();
     const inspector = createInspectorMock();
 
     withInspectorMock(inspector.inspectorModule, () => {
       const manager = new InspectorManager(createInspectorConfig()) as unknown as {
+        ensureDebuggerActive(): void;
         cache: Map<string, { frames: unknown[]; timestamp: number }>;
         shutdown(): void;
       };
+
+      manager.ensureDebuggerActive();
 
       manager.cache.set('Error: expired', {
         frames: [],
@@ -472,6 +482,8 @@ describe('InspectorManager', () => {
   });
 
   it('always resumes even if collection throws inside the paused handler', () => {
+    createTimerStubs();
+    createTimeoutStubs();
     const inspector = createInspectorMock({
       postHandlers: {
         'Runtime.getProperties': () => {
@@ -482,9 +494,12 @@ describe('InspectorManager', () => {
 
     withInspectorMock(inspector.inspectorModule, () => {
       const manager = new InspectorManager(createInspectorConfig()) as unknown as {
+        ensureDebuggerActive(): void;
         _onPaused(params: unknown): void;
         shutdown(): void;
       };
+
+      manager.ensureDebuggerActive();
 
       expect(() =>
         manager._onPaused({

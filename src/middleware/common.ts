@@ -12,6 +12,7 @@ export interface SDKInstanceLike {
       url: string;
       headers: Record<string, string>;
     }): { requestId: string };
+    getContext?(): { requestId: string } | undefined;
     runWithContext<T>(ctx: { requestId: string }, fn: () => T): T;
   };
   requestTracker: {

@@ -11,6 +11,32 @@ function matchesRegex(pattern: RegExp, value: string): boolean {
   return pattern.test(value);
 }
 
+function normalizeHeaderValue(value: unknown): string | null {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (typeof value === 'number') {
+    return String(value);
+  }
+
+  if (Array.isArray(value)) {
+    let joined = '';
+
+    for (const entry of value) {
+      if (typeof entry !== 'string') {
+        continue;
+      }
+
+      joined = joined === '' ? entry : `${joined}, ${entry}`;
+    }
+
+    return joined;
+  }
+
+  return null;
+}
+
 export class HeaderFilter {
   private readonly allowlist: Set<string>;
 
@@ -21,20 +47,24 @@ export class HeaderFilter {
     this.blocklist = config.headerBlocklist;
   }
 
-  public filterHeaders(headers: Record<string, string>): Record<string, string> {
+  public filterHeaders(headers: Record<string, unknown>): Record<string, string> {
     const filtered: Record<string, string> = {};
 
     try {
-      for (const [headerName, headerValue] of Object.entries(headers)) {
+      for (const headerName in headers) {
+        const headerValue = headers[headerName];
         const normalizedName = headerName.toLowerCase();
-        const allowed = this.allowlist.has(normalizedName);
-        const blocked = this.blocklist.some((pattern) =>
-          matchesRegex(pattern, normalizedName)
-        );
+        const normalizedValue = normalizeHeaderValue(headerValue);
 
-        if (allowed && !blocked) {
-          filtered[normalizedName] = headerValue;
+        if (normalizedValue === null || !this.allowlist.has(normalizedName)) {
+          continue;
         }
+
+        if (this.blocklist.some((pattern) => matchesRegex(pattern, normalizedName))) {
+          continue;
+        }
+
+        filtered[normalizedName] = normalizedValue;
       }
     } catch {
       return filtered;

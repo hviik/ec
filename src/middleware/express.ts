@@ -24,6 +24,11 @@ export function expressMiddleware(sdk?: SDKInstanceLike) {
     }
 
     try {
+      if (instance.als.getContext?.() !== undefined) {
+        next();
+        return;
+      }
+
       const ctx = instance.als.createRequestContext({
         method: req.method,
         url: req.url,

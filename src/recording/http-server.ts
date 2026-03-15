@@ -11,7 +11,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 
 import type { IOEventSlot, RequestContext, ResolvedConfig } from '../types';
-import { copyHeaders, extractFd, toDurationMs } from './utils';
+import { extractFd, toDurationMs } from './utils';
 
 interface IOEventBufferLike {
   push(event: Omit<IOEventSlot, 'seq' | 'estimatedBytes'>): {
@@ -45,6 +45,7 @@ interface BodyCaptureLike {
     seq: number,
     onBytesChanged: (oldBytes: number, newBytes: number) => void
   ): void;
+  releaseInboundRequest(req: IncomingMessage): void;
   captureOutboundResponse(
     res: ServerResponse,
     slot: IOEventSlot,
@@ -56,7 +57,7 @@ interface BodyCaptureLike {
 }
 
 interface HeaderFilterLike {
-  filterHeaders(headers: Record<string, string>): Record<string, string>;
+  filterHeaders(headers: Record<string, unknown>): Record<string, string>;
 }
 
 interface ScrubberLike {
@@ -92,6 +93,8 @@ class RequestFinalizer {
 
   public headerFilter!: HeaderFilterLike;
 
+  public bodyCapture!: BodyCaptureLike;
+
   public requestContexts!: WeakMap<object, RequestContext>;
 
   public pool!: RequestFinalizer[];
@@ -106,6 +109,7 @@ class RequestFinalizer {
     requestTracker: RequestTrackerLike;
     als: ALSManagerLike;
     headerFilter: HeaderFilterLike;
+    bodyCapture: BodyCaptureLike;
     requestContexts: WeakMap<object, RequestContext>;
     pool: RequestFinalizer[];
   }): this {
@@ -116,6 +120,7 @@ class RequestFinalizer {
     this.requestTracker = input.requestTracker;
     this.als = input.als;
     this.headerFilter = input.headerFilter;
+    this.bodyCapture = input.bodyCapture;
     this.requestContexts = input.requestContexts;
     this.pool = input.pool;
     this.finalized = false;
@@ -131,13 +136,14 @@ class RequestFinalizer {
     this.slot.aborted = aborted;
     this.slot.statusCode = this.response.statusCode ?? this.slot.statusCode;
     this.slot.responseHeaders = this.headerFilter.filterHeaders(
-      copyHeaders(this.response.getHeaders() as Record<string, unknown>)
+      this.response.getHeaders() as Record<string, unknown>
     );
     this.slot.endTime = process.hrtime.bigint();
     this.slot.durationMs = toDurationMs(this.slot.startTime, this.slot.endTime);
     this.slot.phase = 'done';
     this.context.body = this.slot.requestBody;
     this.context.bodyTruncated = this.slot.requestBodyTruncated;
+    this.bodyCapture.releaseInboundRequest(this.request);
     this.requestTracker.remove(this.context.requestId);
     this.requestContexts.delete(this.request);
     this.als.releaseRequestContext?.(this.context);
@@ -157,6 +163,7 @@ class RequestFinalizer {
     this.requestTracker = undefined as never;
     this.als = undefined as never;
     this.headerFilter = undefined as never;
+    this.bodyCapture = undefined as never;
     this.requestContexts = undefined as never;
     this.pool = undefined as never;
   }
@@ -176,8 +183,6 @@ function handleResponseClose(this: ServerResponse): void {
 }
 
 export class HttpServerRecorder {
-  private static readonly REQUEST_HEADER_CACHE_LIMIT = 4;
-
   private readonly buffer: IOEventBufferLike;
 
   private readonly als: ALSManagerLike;
@@ -193,8 +198,6 @@ export class HttpServerRecorder {
   private readonly config: ResolvedConfig;
 
   private readonly requestContexts = new WeakMap<object, RequestContext>();
-
-  private readonly requestHeaderCache = new Map<string, Record<string, string>>();
 
   private readonly originalServerEmit: typeof Server.prototype.emit;
 
@@ -264,7 +267,7 @@ export class HttpServerRecorder {
         url: context.url,
         statusCode: null,
         fd: extractFd(socket),
-        requestHeaders: { ...context.headers },
+        requestHeaders: context.headers,
         responseHeaders: null,
         requestBody: null,
         responseBody: null,
@@ -295,6 +298,7 @@ export class HttpServerRecorder {
         requestTracker: this.requestTracker,
         als: this.als,
         headerFilter: this.headerFilter,
+        bodyCapture: this.bodyCapture,
         requestContexts: this.requestContexts,
         pool: this.finalizerPool
       });
@@ -386,45 +390,6 @@ export class HttpServerRecorder {
   private getFilteredRequestHeaders(
     headers: Record<string, unknown>
   ): Record<string, string> {
-    const cacheKey = this.getRequestHeaderCacheKey(headers);
-    const cached = this.requestHeaderCache.get(cacheKey);
-
-    if (cached !== undefined) {
-      this.requestHeaderCache.delete(cacheKey);
-      this.requestHeaderCache.set(cacheKey, cached);
-      return cached;
-    }
-
-    const filtered = this.headerFilter.filterHeaders(copyHeaders(headers));
-    this.requestHeaderCache.set(cacheKey, filtered);
-
-    if (this.requestHeaderCache.size > HttpServerRecorder.REQUEST_HEADER_CACHE_LIMIT) {
-      const oldestKey = this.requestHeaderCache.keys().next().value as string | undefined;
-      if (oldestKey !== undefined) {
-        this.requestHeaderCache.delete(oldestKey);
-      }
-    }
-
-    return filtered;
-  }
-
-  private getRequestHeaderCacheKey(headers: Record<string, unknown>): string {
-    let key = '';
-
-    for (const [headerName, headerValue] of Object.entries(headers)) {
-      if (headerValue === undefined) {
-        continue;
-      }
-
-      const normalizedName = headerName.toLowerCase();
-      if (Array.isArray(headerValue)) {
-        key += `${normalizedName}=${headerValue.map((value) => String(value)).join(',')}\n`;
-        continue;
-      }
-
-      key += `${normalizedName}=${String(headerValue)}\n`;
-    }
-
-    return key;
+    return this.headerFilter.filterHeaders(headers);
   }
 }

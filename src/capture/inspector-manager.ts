@@ -86,7 +86,11 @@ export class InspectorManager {
 
   private readonly maxLocalsFrames: number;
 
+  private readonly captureLocalVariables: boolean;
+
   private available = false;
+
+  private initialized = false;
 
   private session: InspectorSession | null = null;
 
@@ -106,22 +110,33 @@ export class InspectorManager {
     this.maxCollectionsPerSecond = config.maxLocalsCollectionsPerSecond;
     this.maxCachedLocals = config.maxCachedLocals;
     this.maxLocalsFrames = config.maxLocalsFrames;
+    this.captureLocalVariables = config.captureLocalVariables;
 
-    if (!config.captureLocalVariables) {
-      return;
+    if (this.captureLocalVariables) {
+      this.available = true;
     }
+  }
+
+  private _initSession(): boolean {
+    if (this.initialized) {
+      return this.session !== null;
+    }
+
+    this.initialized = true;
 
     let inspectorModule: InspectorModule;
 
     try {
       inspectorModule = getInspectorModule();
     } catch {
-      return;
+      this.available = false;
+      return false;
     }
 
     if (inspectorModule.url()) {
       console.warn('[ECD] Debugger already attached; local variable capture disabled');
-      return;
+      this.available = false;
+      return false;
     }
 
     try {
@@ -139,10 +154,11 @@ export class InspectorManager {
         this._sweepCache();
       }, 10000);
       this.cacheSweepTimer.unref();
-      this.available = true;
+      return true;
     } catch {
       this.available = false;
       this.session = null;
+      return false;
     }
   }
 
@@ -165,7 +181,15 @@ export class InspectorManager {
   }
 
   public ensureDebuggerActive(): void {
-    if (!this.available || this.session === null) {
+    if (!this.available) {
+      return;
+    }
+
+    if (!this.initialized && !this._initSession()) {
+      return;
+    }
+
+    if (this.session === null) {
       return;
     }
 

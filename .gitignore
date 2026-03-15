@@ -6,3 +6,4 @@ benchmark-results/
 ecd-output/
 logs/
 target-app/
+perf/

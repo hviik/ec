@@ -198,12 +198,6 @@ export class IOEventBuffer {
   }
 
   private recycleSlot(slot: IOEventSlot): void {
-    slot.requestBody?.fill(0);
-    slot.responseBody?.fill(0);
-    const symbolSlot = slot as unknown as Record<symbol, unknown>;
-    for (const symbolKey of Object.getOwnPropertySymbols(slot)) {
-      delete symbolSlot[symbolKey];
-    }
     slot.requestBody = null;
     slot.responseBody = null;
     slot.requestBodyDigest = null;

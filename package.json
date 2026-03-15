@@ -19,7 +19,10 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "bench:assert": "npm run build && BENCH_SCENARIOS=mixed BENCH_ITERATIONS=3 BENCH_WARMUP_SECONDS=10 BENCH_DURATION_SECONDS=30 BENCH_COOLDOWN_MS=10000 node benchmark-harness/run-benchmarks.js && node perf/bench/assert.js",
+    "bench:micro": "npm run build && BENCH_ONLY_MICRO=1 node benchmark-harness/run-benchmarks.js",
+    "bench:profile": "npm run build && node perf/bench/profile.js"
   },
   "devDependencies": {
     "@types/node": "^20.19.37",

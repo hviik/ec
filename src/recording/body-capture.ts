@@ -48,7 +48,7 @@ interface InboundRequestCaptureHandler {
   capture: BodyCapture;
   slot: IOEventSlot;
   seq: number;
-  state: AccumulatorState;
+  state: AccumulatorState | null;
   attached: boolean;
   originalOn: IncomingMessage['on'];
   onBytesChanged: (oldBytes: number, newBytes: number) => void;
@@ -130,6 +130,11 @@ export class BodyCapture {
     }
 
     if (eventName === 'data' && !handler.attached) {
+      if (handler.state === null) {
+        handler.state = handler.capture.createState(handler.slot.requestHeaders);
+        handler.capture.setState(handler.slot, 'request', handler.state);
+      }
+
       handler.attached = true;
       Reflect.apply(handler.originalOn, this, ['data', BodyCapture.handleInboundRequestData]);
       Reflect.apply(handler.originalOn, this, ['end', BodyCapture.handleInboundRequestEnd]);
@@ -145,6 +150,10 @@ export class BodyCapture {
     const handler = request[INBOUND_REQUEST_CAPTURE];
 
     if (handler === undefined) {
+      return;
+    }
+
+    if (handler.state === null) {
       return;
     }
 
@@ -174,6 +183,11 @@ export class BodyCapture {
 
     request.on = handler.originalOn;
     delete request[INBOUND_REQUEST_CAPTURE];
+
+    if (handler.state === null) {
+      return;
+    }
+
     handler.capture.finalizeCapture({
       slot: handler.slot,
       seq: handler.seq,
@@ -313,8 +327,6 @@ export class BodyCapture {
       return;
     }
 
-    const state = this.createState(slot.requestHeaders);
-    this.setState(slot, 'request', state);
     const request = req as IncomingMessage & {
       [INBOUND_REQUEST_CAPTURE]?: InboundRequestCaptureHandler;
     };
@@ -323,12 +335,33 @@ export class BodyCapture {
       capture: this,
       slot,
       seq,
-      state,
+      state: null,
       attached: false,
       originalOn: req.on,
       onBytesChanged
     };
     req.on = BodyCapture.handleInboundRequestOn as IncomingMessage['on'];
+  }
+
+  public releaseInboundRequest(req: IncomingMessage): void {
+    const request = req as IncomingMessage & {
+      [INBOUND_REQUEST_CAPTURE]?: InboundRequestCaptureHandler;
+    };
+    const handler = request[INBOUND_REQUEST_CAPTURE];
+
+    if (handler === undefined) {
+      return;
+    }
+
+    request.on = handler.originalOn;
+    delete request[INBOUND_REQUEST_CAPTURE];
+
+    if (handler.state === null) {
+      return;
+    }
+
+    delete this.getState(handler.slot).request;
+    this.releaseState(handler.state);
   }
 
   public captureOutboundResponse(
